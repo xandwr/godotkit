@@ -2,5 +2,7 @@
 name = "godotkit"
 version = "0.1.0"
 edition = "2024"
+description = "A toolkit for Godot, starting with a GDScript formatter"
 
 [dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
