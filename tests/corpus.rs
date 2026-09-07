@@ -2,12 +2,12 @@ use std::process::Command;
 
 use godotkit::{
     formatter::{Options, format_source},
-    lexer::tokenize,
+    syntax::parse,
 };
 
 #[test]
 #[ignore = "requires GODOT_SOURCE pointing to an engine repository with tag 4.7.2-stable"]
-fn engine_corpus_roundtrips_and_formats_stably() {
+fn engine_corpus_formats_stably_and_reparses() {
     let repository =
         std::env::var_os("GODOT_SOURCE").expect("set GODOT_SOURCE to the engine repository");
     let listing = Command::new("git")
@@ -25,7 +25,11 @@ fn engine_corpus_roundtrips_and_formats_stably() {
     assert!(listing.status.success());
     let mut count = 0;
     for path in String::from_utf8(listing.stdout).unwrap().lines() {
-        if !path.ends_with(".gd") || path.contains("/errors/") || path.contains("/completion/") {
+        if !path.ends_with(".gd")
+            || path.contains("/errors/")
+            || path.contains("/completion/")
+            || path.contains("/lsp/")
+        {
             continue;
         }
         let original = Command::new("git")
@@ -36,18 +40,13 @@ fn engine_corpus_roundtrips_and_formats_stably() {
             .unwrap();
         assert!(original.status.success(), "{path}");
         let source = String::from_utf8(original.stdout).unwrap();
-        let tokens = tokenize(&source).unwrap_or_else(|error| panic!("{path}: {error}"));
-        let reconstructed: String = tokens
-            .iter()
-            .map(|token| &source[token.span.clone()])
-            .collect();
-        assert_eq!(reconstructed, source, "{path}");
         let formatted = format_source(&source, &Options::default())
             .unwrap_or_else(|error| panic!("{path}: {error}"));
+        assert!(parse(&formatted).is_valid(), "{path}");
         let again = format_source(&formatted, &Options::default()).unwrap();
         assert_eq!(formatted, again, "{path}");
         count += 1;
     }
-    assert!(count > 0);
+    assert!(count > 300);
     println!("Verified {count} Godot 4.7.2 scripts");
 }

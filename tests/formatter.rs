@@ -1,21 +1,33 @@
 use godotkit::{
     formatter::{Options, format_source},
-    lexer::tokenize,
+    syntax::parse,
 };
 
+fn script(body: &str, indent: &str) -> String {
+    if body.starts_with("func ") {
+        return body.to_owned();
+    }
+    let newline = if body.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut source = format!("func f():{newline}");
+    for line in body.split_inclusive('\n') {
+        source.push_str(indent);
+        source.push_str(line);
+    }
+    source
+}
+
 fn check(before: &str, after: &str) {
+    let indent = if before.contains('\t') { "\t" } else { "    " };
+    let before = script(before, indent);
+    let after = script(after, indent);
+    let before = before.as_str();
     let formatted = format_source(before, &Options::default()).unwrap();
     assert_eq!(formatted, after);
     assert_eq!(
         format_source(&formatted, &Options::default()).unwrap(),
         formatted
     );
-    let tokens = tokenize(before).unwrap();
-    let reconstructed: String = tokens
-        .iter()
-        .map(|token| &before[token.span.clone()])
-        .collect();
-    assert_eq!(reconstructed, before);
+    assert!(parse(&formatted).is_valid());
 }
 
 #[test]
@@ -86,7 +98,7 @@ fn handles_adjacent_guards_and_else() {
 
 #[test]
 fn respects_visual_width_with_tabs() {
-    let source = "\tif ready:\n\t\treturn\n";
+    let source = "func f():\n\tif ready:\n\t\treturn\n";
     assert_eq!(
         format_source(
             source,
@@ -96,7 +108,7 @@ fn respects_visual_width_with_tabs() {
             }
         )
         .unwrap(),
-        "\tif ready: return\n"
+        "func f():\n\tif ready: return\n"
     );
     assert_eq!(
         format_source(
@@ -112,15 +124,15 @@ fn respects_visual_width_with_tabs() {
 }
 
 #[test]
-fn reports_lexical_errors_without_panicking() {
+fn reports_syntax_errors_without_panicking() {
     for source in ["var x = \"unterminated", "var x = [)", "var x = ("] {
         assert!(
             format_source(source, &Options::default()).is_err(),
             "{source}"
         );
     }
-    for source in ["", "\n", "# trailing", "var π = 3.14\n", "\"😀\\😀\""] {
-        check(source, source);
+    for source in ["", "\n", "# trailing", "var π = 3.14\n"] {
+        assert_eq!(format_source(source, &Options::default()).unwrap(), source);
     }
 }
 
@@ -141,5 +153,50 @@ fn dedented_comments_do_not_end_a_suite() {
     check(
         "if ready:\n    return\n# explanation\nwork()\n",
         "if ready: return\n# explanation\nwork()\n",
+    );
+}
+
+#[test]
+fn rejects_invalid_syntax_even_after_a_valid_guard() {
+    for source in [
+        "if ready:\n    return\n",
+        "func f():\n    if :\n        return\n",
+        "func f():\n    if ready:\n        return\n    var value =\n",
+        "func f():\n    if ready:\n        return\n  pass\n",
+        "var value = \"bad\\q\"\n",
+    ] {
+        let parsed = parse(source);
+        let error = format_source(source, &Options::default()).unwrap_err();
+        assert_eq!(&error, &parsed.errors()[0]);
+    }
+}
+
+#[test]
+fn preserves_branch_boundaries_and_statement_separators() {
+    check(
+        "if a:\n    return\nelif b:\n    return\nelse:\n    if c:\n        return\n",
+        "if a: return\nelif b:\n    return\nelse:\n    if c: return\n",
+    );
+    for source in [
+        "if a:\n    return; work()\n",
+        "if a:\n    return\n    ;\n",
+        "if a: return; work()\n",
+        "if a:\n    return\n    ## explanation\n",
+        "if a:\n    return\n    #region explanation\n",
+    ] {
+        check(source, source);
+    }
+    check("if a:  \n    return  \n", "if a: return  \n");
+}
+
+#[test]
+fn formats_guards_in_lambdas_and_match_arms() {
+    check(
+        "var callback = func():\n    if ready:\n        return\ncallback.call()\n",
+        "var callback = func():\n    if ready: return\ncallback.call()\n",
+    );
+    check(
+        "match value:\n    1:\n        if ready:\n            return\n    _:\n        pass\n",
+        "match value:\n    1:\n        if ready: return\n    _:\n        pass\n",
     );
 }

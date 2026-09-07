@@ -1,4 +1,4 @@
-use crate::lexer::{Kind, LexError, Token, tokenize};
+use crate::syntax::{Element, Node, Span, SyntaxError, SyntaxKind as K, parse};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -15,130 +15,97 @@ impl Default for Options {
     }
 }
 
-struct Line<'a> {
-    start: usize,
-    end: usize,
-    tokens: Vec<&'a Token>,
+fn line_start(source: &str, offset: usize) -> usize {
+    source[..offset].rfind(['\r', '\n']).map_or(0, |at| at + 1)
 }
 
-impl Line<'_> {
-    fn indent<'a>(&self, source: &'a str) -> &'a str {
-        let text = &source[self.start..self.end];
-        &text[..text.len() - text.trim_start_matches([' ', '\t']).len()]
+fn guard_edit(node: Node<'_>, source: &str, options: &Options) -> Option<Span> {
+    let block = node.children().find(|child| child.kind() == K::Block)?;
+    let mut statements = block.children();
+    let statement = statements.next()?;
+    if statement.kind() != K::ReturnStmt
+        || statements.next().is_some()
+        || statement.children().next().is_some()
+    {
+        return None;
     }
-}
-
-fn suite_ends(lines: &[Line<'_>], source: &str, indent: &str) -> bool {
-    for line in lines {
-        if line.tokens.is_empty() {
-            continue;
-        }
-        if !indent.starts_with(line.indent(source)) {
-            return false;
-        }
-        if line.tokens.iter().any(|token| token.kind != Kind::Comment) {
-            return true;
-        }
+    let keyword = node
+        .children_with_tokens()
+        .find_map(|element| match element {
+            Element::Token(token) if token.kind == K::IfKw => Some(token),
+            _ => None,
+        })?;
+    let colon = node
+        .children_with_tokens()
+        .find_map(|element| match element {
+            Element::Token(token) if token.kind == K::Colon => Some(token),
+            _ => None,
+        })?;
+    let returned = statement.tokens().find(|token| token.kind == K::ReturnKw)?;
+    let start = line_start(source, keyword.range.start);
+    let indent = &source[start..keyword.range.start];
+    let header = &source[start..colon.range.end];
+    if !indent.bytes().all(|byte| matches!(byte, b' ' | b'\t')) || header.contains(['\r', '\n']) {
+        return None;
     }
-    true
-}
-
-pub fn format_source(source: &str, options: &Options) -> Result<String, LexError> {
-    let tokens = tokenize(source)?;
-    let mut lines = Vec::new();
-    let mut line = Line {
-        start: 0,
-        end: 0,
-        tokens: Vec::new(),
-    };
-    let mut brackets = Vec::new();
-    for token in &tokens {
-        let text = &source[token.span.clone()];
-        if token.kind == Kind::Symbol {
-            match text {
-                "(" | "[" | "{" => brackets.push(text),
-                ")" | "]" | "}" => {
-                    let expected = match text {
-                        ")" => "(",
-                        "]" => "[",
-                        _ => "{",
-                    };
-                    if brackets.pop() != Some(expected) {
-                        return Err(LexError {
-                            offset: token.span.start,
-                            message: "unmatched closing delimiter",
-                        });
-                    }
-                }
-                _ => {}
+    let gap = &source[colon.range.end..returned.range.start];
+    let gap = gap.trim_start_matches([' ', '\t']);
+    let indentation = gap
+        .strip_prefix("\r\n")
+        .or_else(|| gap.strip_prefix('\n'))?;
+    if indentation.is_empty() || !indentation.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+        return None;
+    }
+    let tail = &source[returned.range.end..];
+    let tail = &tail[..tail.find(['\r', '\n']).unwrap_or(tail.len())];
+    if !tail.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+        return None;
+    }
+    for token in block.tokens() {
+        if token.kind == K::Semicolon {
+            return None;
+        }
+        if matches!(
+            token.kind,
+            K::LineComment | K::DocComment | K::RegionComment | K::EndRegionComment
+        ) {
+            let comment_indent = &source[line_start(source, token.range.start)..token.range.start];
+            if token.range.start < returned.range.end || comment_indent.len() > indent.len() {
+                return None;
             }
         }
-        line.end = token.span.end;
-        let continued = line
-            .tokens
-            .last()
-            .is_some_and(|last| &source[last.span.clone()] == "\\");
-        if token.kind == Kind::Newline && brackets.is_empty() && !continued {
-            lines.push(line);
-            line = Line {
-                start: token.span.end,
-                end: token.span.end,
-                tokens: Vec::new(),
-            };
-        } else if !matches!(token.kind, Kind::Space | Kind::Newline) {
-            line.tokens.push(token);
-        }
     }
-    if !brackets.is_empty() {
-        return Err(LexError {
-            offset: source.len(),
-            message: "unclosed delimiter",
+    let tab_width = options.tab_width.max(1);
+    let width = header
+        .chars()
+        .chain(" return".chars())
+        .fold(0, |column, ch| {
+            if ch == '\t' {
+                column + tab_width - column % tab_width
+            } else {
+                column + 1
+            }
         });
-    }
-    if line.end > line.start {
-        lines.push(line);
+    (width <= options.line_width).then_some(Span::new(colon.range.end, returned.range.start))
+}
+
+pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxError> {
+    let parsed = parse(source);
+    if let Some(error) = parsed.errors().first() {
+        return Err(error.clone());
     }
     let mut output = String::with_capacity(source.len());
     let mut cursor = 0;
-    let mut index = 0;
-    while index + 1 < lines.len() {
-        let header = &lines[index];
-        let body = &lines[index + 1];
-        let header_indent = header.indent(source);
-        let body_indent = body.indent(source);
-        let header_text = source[header.start..header.end].trim_end_matches(['\r', '\n']);
-        let guard = header.tokens.len() >= 3
-            && &source[header.tokens[0].span.clone()] == "if"
-            && &source[header.tokens.last().unwrap().span.clone()] == ":"
-            && !header
-                .tokens
-                .iter()
-                .any(|token| token.kind == Kind::Comment)
-            && !header_text.contains(['\r', '\n'])
-            && body.tokens.len() == 1
-            && &source[body.tokens[0].span.clone()] == "return"
-            && body_indent.starts_with(header_indent)
-            && body_indent.len() > header_indent.len();
-        if guard && suite_ends(&lines[index + 2..], source, header_indent) {
-            let compact = format!("{} return", header_text.trim_end_matches([' ', '\t']));
-            let width = compact.chars().fold(0, |column, ch| {
-                if ch == '\t' {
-                    column + options.tab_width.max(1) - column % options.tab_width.max(1)
-                } else {
-                    column + 1
-                }
-            });
-            if width <= options.line_width {
-                output.push_str(&source[cursor..header.start]);
-                output.push_str(&compact);
-                let return_end = body.tokens[0].span.end;
-                output.push_str(&source[return_end..body.end]);
-                cursor = body.end;
-                index += 2;
-                continue;
-            }
+    for node in parsed
+        .root()
+        .descendants()
+        .filter(|node| node.kind() == K::IfStmt)
+    {
+        if let Some(edit) = guard_edit(node, source, options) {
+            output.push_str(&source[cursor..edit.start]);
+            output.push(' ');
+            cursor = edit.end;
         }
-        index += 1;
     }
     output.push_str(&source[cursor..]);
     Ok(output)

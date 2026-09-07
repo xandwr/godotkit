@@ -1,7 +1,8 @@
 # godotkit
 
 A Rust formatter targeting GDScript 4.7.2. Currently compacts bare-return `if`
-guards; preserves other formatting. Full syntax validation is not implemented.
+guards using the owned lossless syntax tree; preserves other formatting. Inputs
+with parser diagnostics are rejected before producing output or writing files.
 
 ```sh
 cargo run -- format script.gd
@@ -16,6 +17,12 @@ Omit the path to read stdin. Output goes to stdout unless `--write` or `--check`
 is used. Check exits 1 for changes; errors exit 2. Guard width defaults to 100
 columns (`--line-width`); tabs count to the next multiple of 4. Guards with
 comments or multiline conditions stay unchanged. The ignored test needs Godot 4.7.2.
+
+`formatter::format_source` returns `Result<String, syntax::SyntaxError>`, reporting
+the first parser diagnostic with its byte range. It expects a complete script;
+statement fragments must be placed inside a function. Guard selection uses syntax
+blocks and return statements, then replaces only the whitespace between the
+header colon and bare return. No legacy lexer or fallback formatting path remains.
 
 ## Syntax parser
 
@@ -69,7 +76,7 @@ and other contextual restrictions are not fully validated. Unicode lexical edge
 cases and exact diagnostic parity also need further conformance work. Recursive
 parsing is limited to 128 nested parser calls; exceeding that limit produces a
 diagnostic while retaining the input. Corpus acceptance does not prove full
-language coverage. The formatter currently uses its original token-based path.
+language coverage. The formatter uses this parser as its only syntax frontend.
 
 Upstream revision and attribution are recorded in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
