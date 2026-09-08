@@ -32,19 +32,32 @@ statement fragments must be placed inside a function. Guard selection uses synta
 blocks and return statements. No legacy lexer or fallback formatting path remains.
 
 Formatting uses tabs for indentation, removes trailing whitespace and outer blank
-lines, and collapses extra blank lines inside functions. Functions have two blank
-lines between them and after preceding fields. Field categories have one blank
-line between them, including public/private and static/instance boundaries.
-Existing single blank lines within a category preserve semantic groups.
+lines, normalizes spacing around operators, commas, type annotations, calls,
+collections, and inline comments, and collapses extra blank lines inside
+functions. Multiline arrays, dictionaries, and enums receive trailing commas;
+single-line collections do not retain them. Functions have two blank lines
+between them and after preceding fields. Field categories have one blank line
+between them, including public/private and static/instance boundaries. Existing
+single blank lines within a category preserve semantic groups.
 
-Consecutive fields are stably ordered: constants, exports, onready variables,
-then untagged variables. Attached comments and annotations move with fields.
+Consecutive fields are stably ordered: constants, static variables, exports,
+regular variables, then onready variables, with public names before private names.
+Attached comments and annotations move with fields. Script and inner-class
+documentation remains attached to its class.
 Functions, other declarations, and export group/category annotations act as sorting
 boundaries. Ordering can change initializer execution order across categories;
 within each category, declaration order is preserved. String contents and existing
 line endings are preserved. Missing final newlines remain missing unless field
 reordering requires a line separator. Invalid input is rejected, including mixed
 indentation diagnosed by the parser.
+
+Formatting can be disabled for a region without weakening syntax validation:
+
+```gdscript
+# godotkit: off
+var deliberately   =   spaced
+# godotkit: on
+```
 
 ## Syntax parser
 

@@ -1,4 +1,4 @@
-use crate::syntax::{Element, Node, Span, SyntaxError, SyntaxKind as K, parse};
+use crate::syntax::{Element, Node, Span, SyntaxError, SyntaxKind as K, parse, tokenize};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -17,6 +17,48 @@ impl Default for Options {
 
 fn line_start(source: &str, offset: usize) -> usize {
     source[..offset].rfind(['\r', '\n']).map_or(0, |at| at + 1)
+}
+
+fn line_end(source: &str, offset: usize) -> usize {
+    source[offset..]
+        .find('\n')
+        .map_or(source.len(), |at| offset + at + 1)
+}
+
+fn disabled_ranges(source: &str) -> Vec<Span> {
+    let (tokens, _) = tokenize(source);
+    let mut ranges = Vec::new();
+    let mut start = None;
+    for token in tokens {
+        if !matches!(
+            token.kind,
+            K::LineComment | K::DocComment | K::RegionComment | K::EndRegionComment
+        ) {
+            continue;
+        }
+        match source[token.range].trim() {
+            "# godotkit: off" if start.is_none() => {
+                start = Some(line_start(source, token.range.start));
+            }
+            "# godotkit: on" if start.is_some() => {
+                ranges.push(Span::new(
+                    start.take().unwrap(),
+                    line_end(source, token.range.end),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = start {
+        ranges.push(Span::new(start, source.len()));
+    }
+    ranges
+}
+
+fn disabled(ranges: &[Span], span: Span) -> bool {
+    ranges
+        .iter()
+        .any(|range| span.start < range.end && span.end > range.start)
 }
 
 fn guard_edit(node: Node<'_>, source: &str, options: &Options) -> Option<Span> {
@@ -95,9 +137,12 @@ pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxEr
         return Err(error.clone());
     }
     let reordered = reorder_fields(source);
-    let normalized = normalize_whitespace(&reordered)?;
+    let trailed = normalize_trailing_commas(&reordered)?;
+    let spaced = normalize_inline_spacing(&trailed)?;
+    let normalized = normalize_whitespace(&spaced)?;
     let source = normalized.as_str();
     let parsed = parse(source);
+    let disabled_ranges = disabled_ranges(source);
     let mut output = String::with_capacity(source.len());
     let mut cursor = 0;
     for node in parsed
@@ -105,6 +150,9 @@ pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxEr
         .descendants()
         .filter(|node| node.kind() == K::IfStmt)
     {
+        if disabled(&disabled_ranges, node.range()) {
+            continue;
+        }
         if let Some(edit) = guard_edit(node, source, options) {
             output.push_str(&source[cursor..edit.start]);
             output.push(' ');
@@ -112,7 +160,325 @@ pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxEr
         }
     }
     output.push_str(&source[cursor..]);
-    normalize_whitespace(&output)
+    let spaced = normalize_inline_spacing(&output)?;
+    normalize_whitespace(&spaced)
+}
+
+fn normalize_trailing_commas(source: &str) -> Result<String, SyntaxError> {
+    let parsed = parse(source);
+    let disabled_ranges = disabled_ranges(source);
+    let mut edits = Vec::new();
+    for node in parsed
+        .root()
+        .descendants()
+        .filter(|node| matches!(node.kind(), K::ArrayLit | K::DictLit | K::EnumDecl))
+    {
+        if disabled(&disabled_ranges, node.range()) {
+            continue;
+        }
+        let tokens: Vec<_> = node
+            .tokens()
+            .filter(|token| significant(token.kind))
+            .collect();
+        let Some(open_index) = tokens
+            .iter()
+            .position(|token| matches!(token.kind, K::LBrack | K::LBrace))
+        else {
+            continue;
+        };
+        let Some(close_index) = tokens
+            .iter()
+            .rposition(|token| matches!(token.kind, K::RBrack | K::RBrace))
+        else {
+            continue;
+        };
+        if close_index <= open_index + 1 {
+            continue;
+        }
+        let open = tokens[open_index];
+        let close = tokens[close_index];
+        let previous = tokens[close_index - 1];
+        let multiline = source[open.range.end..close.range.start].contains(['\r', '\n']);
+        if multiline && previous.kind != K::Comma {
+            edits.push((previous.range.end, previous.range.end, ","));
+        } else if !multiline && previous.kind == K::Comma {
+            edits.push((previous.range.start, previous.range.end, ""));
+        }
+    }
+    let mut output = source.to_owned();
+    edits.sort_by_key(|edit| edit.0);
+    for (start, end, replacement) in edits.into_iter().rev() {
+        output.replace_range(start..end, replacement);
+    }
+    let checked = parse(&output);
+    if let Some(error) = checked.errors().first() {
+        return Err(error.clone());
+    }
+    Ok(output)
+}
+
+fn operator(kind: K) -> bool {
+    matches!(
+        kind,
+        K::Eq
+            | K::EqEq
+            | K::Neq
+            | K::Lt
+            | K::Gt
+            | K::Le
+            | K::Ge
+            | K::ColonEq
+            | K::Arrow
+            | K::Plus
+            | K::Minus
+            | K::Star
+            | K::Slash
+            | K::StarStar
+            | K::Percent
+            | K::Amp
+            | K::Pipe
+            | K::Caret
+            | K::Shl
+            | K::Shr
+            | K::PlusEq
+            | K::MinusEq
+            | K::StarEq
+            | K::SlashEq
+            | K::StarStarEq
+            | K::PercentEq
+            | K::AmpEq
+            | K::PipeEq
+            | K::CaretEq
+            | K::ShlEq
+            | K::ShrEq
+            | K::AmpAmp
+            | K::PipePipe
+            | K::Bang
+            | K::Tilde
+            | K::NotKw
+            | K::AwaitKw
+            | K::IsKw
+            | K::InKw
+            | K::AsKw
+            | K::AndKw
+            | K::OrKw
+    )
+}
+
+fn expression_end(kind: K) -> bool {
+    matches!(
+        kind,
+        K::Ident
+            | K::Int
+            | K::Float
+            | K::String
+            | K::StringName
+            | K::NodePath
+            | K::True
+            | K::False
+            | K::Null
+            | K::ConstPi
+            | K::ConstTau
+            | K::ConstInf
+            | K::ConstNan
+            | K::SelfKw
+            | K::SuperKw
+            | K::RParen
+            | K::RBrack
+            | K::RBrace
+    )
+}
+
+fn unary(kind: K, before: Option<K>) -> bool {
+    matches!(kind, K::Plus | K::Minus | K::Bang | K::Tilde | K::Percent)
+        && before.is_none_or(|kind| !expression_end(kind))
+}
+
+fn desired_gap(
+    kinds: &[K],
+    index: usize,
+    spaced_colons: &std::collections::HashSet<usize>,
+    at: usize,
+) -> Option<&'static str> {
+    let previous = kinds[index - 1];
+    let current = kinds[index];
+    let before_previous = index.checked_sub(2).map(|index| kinds[index]);
+    if matches!(
+        current,
+        K::RParen | K::RBrack | K::Comma | K::Semicolon | K::Dot | K::DotDot
+    ) {
+        return Some("");
+    }
+    if matches!(
+        previous,
+        K::LParen | K::LBrack | K::Dot | K::DotDot | K::At | K::Dollar
+    ) {
+        return Some("");
+    }
+    if previous == K::LBrace {
+        return Some(if current == K::RBrace { "" } else { " " });
+    }
+    if current == K::RBrace {
+        return Some(if previous == K::LBrace { "" } else { " " });
+    }
+    if previous == K::Comma {
+        return Some(" ");
+    }
+    if current == K::LBrack {
+        return Some(if operator(previous) && !unary(previous, before_previous) {
+            " "
+        } else {
+            ""
+        });
+    }
+    if current == K::LParen {
+        return Some(
+            if operator(previous) && !unary(previous, before_previous)
+                || matches!(previous, K::ReturnKw | K::NotKw | K::AwaitKw)
+                || matches!(
+                    previous,
+                    K::IfKw | K::ElifKw | K::WhileKw | K::ForKw | K::MatchKw
+                )
+            {
+                " "
+            } else {
+                ""
+            },
+        );
+    }
+    if current == K::Colon {
+        return Some("");
+    }
+    if previous == K::Colon && spaced_colons.contains(&at) {
+        return Some(" ");
+    }
+    if operator(current) {
+        return Some(" ");
+    }
+    if operator(previous) {
+        return Some(if unary(previous, before_previous) {
+            ""
+        } else {
+            " "
+        });
+    }
+    if matches!(previous, K::NotKw | K::AwaitKw) {
+        return Some(" ");
+    }
+    if current == K::LBrace {
+        return Some(" ");
+    }
+    None
+}
+
+fn normalize_inline_spacing(source: &str) -> Result<String, SyntaxError> {
+    let parsed = parse(source);
+    if let Some(error) = parsed.errors().first() {
+        return Err(error.clone());
+    }
+    let mut spaced_colons = std::collections::HashSet::new();
+    let disabled_ranges = disabled_ranges(source);
+    for node in parsed.root().descendants().filter(|node| {
+        matches!(
+            node.kind(),
+            K::Param
+                | K::VarargParam
+                | K::VarDecl
+                | K::VarStmt
+                | K::DictEntry
+                | K::FuncDecl
+                | K::IfStmt
+                | K::ElifClause
+                | K::ElseClause
+                | K::ForStmt
+                | K::WhileStmt
+                | K::MatchStmt
+                | K::MatchArm
+                | K::InnerClassDecl
+                | K::Getter
+                | K::Setter
+        )
+    }) {
+        for element in node.children_with_tokens() {
+            if let Element::Token(token) = element
+                && token.kind == K::Colon
+            {
+                spaced_colons.insert(token.range.end);
+            }
+        }
+    }
+    let (lexed, errors) = tokenize(source);
+    if let Some(error) = errors.first() {
+        return Err(error.clone());
+    }
+    let mut edits = Vec::new();
+    for (index, token) in lexed.iter().enumerate() {
+        if !matches!(
+            token.kind,
+            K::LineComment | K::DocComment | K::RegionComment | K::EndRegionComment
+        ) {
+            continue;
+        }
+        let Some(previous) = lexed[..index]
+            .iter()
+            .rev()
+            .find(|token| token.kind != K::Whitespace)
+        else {
+            continue;
+        };
+        let gap = &source[previous.range.end..token.range.start];
+        if !disabled(
+            &disabled_ranges,
+            Span::new(previous.range.end, token.range.end),
+        ) && line_start(source, previous.range.start) == line_start(source, token.range.start)
+            && gap.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            && gap != " "
+        {
+            edits.push((previous.range.end, token.range.start, " "));
+        }
+    }
+    let tokens: Vec<_> = lexed
+        .into_iter()
+        .filter(|token| {
+            !matches!(
+                token.kind,
+                K::Whitespace
+                    | K::NewlinePhys
+                    | K::LineContinuation
+                    | K::LineComment
+                    | K::DocComment
+                    | K::RegionComment
+                    | K::EndRegionComment
+                    | K::Bom
+            )
+        })
+        .collect();
+    let kinds: Vec<_> = tokens.iter().map(|token| token.kind).collect();
+    for index in 1..tokens.len() {
+        let previous = tokens[index - 1];
+        let current = tokens[index];
+        let gap = &source[previous.range.end..current.range.start];
+        if !disabled(
+            &disabled_ranges,
+            Span::new(previous.range.end, current.range.end),
+        ) && gap.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            && let Some(desired) = desired_gap(&kinds, index, &spaced_colons, previous.range.end)
+                .or_else(|| (!gap.is_empty()).then_some(" "))
+            && gap != desired
+        {
+            edits.push((previous.range.end, current.range.start, desired));
+        }
+    }
+    let mut output = source.to_owned();
+    edits.sort_by_key(|edit| edit.0);
+    for (start, end, replacement) in edits.into_iter().rev() {
+        output.replace_range(start..end, replacement);
+    }
+    let checked = parse(&output);
+    if let Some(error) = checked.errors().first() {
+        return Err(error.clone());
+    }
+    Ok(output)
 }
 
 fn significant(kind: K) -> bool {
@@ -136,6 +502,13 @@ fn normalize_whitespace(source: &str) -> Result<String, SyntaxError> {
     let mut lines: Vec<String> = source.split_inclusive('\n').map(str::to_owned).collect();
     let mut protected = vec![false; lines.len()];
     let mut protected_tail = vec![false; lines.len()];
+    for range in disabled_ranges(source) {
+        if !lines.is_empty() {
+            let first = line_index(range.start);
+            let last = line_index(range.end.saturating_sub(1));
+            protected[first..last + 1].fill(true);
+        }
+    }
     let mut columns = std::collections::BTreeMap::from([(0, 0)]);
     let mut line_columns = vec![columns.clone(); lines.len()];
     let mut seen = vec![false; lines.len()];
@@ -287,7 +660,12 @@ fn normalize_whitespace(source: &str) -> Result<String, SyntaxError> {
                         member.kind(),
                         K::VarDecl | K::ConstDecl | K::SignalDecl | K::EnumDecl
                     );
-                    let blanks = if member.kind() == K::FuncDecl || *previous_kind == K::FuncDecl {
+                    let class_documentation =
+                        matches!(previous_kind, K::ExtendsClause | K::ClassNameDecl)
+                            && lines[start].trim_start().starts_with("##");
+                    let blanks = if class_documentation {
+                        0
+                    } else if member.kind() == K::FuncDecl || *previous_kind == K::FuncDecl {
                         2
                     } else if fields && category != *previous_category {
                         1
@@ -333,6 +711,7 @@ fn normalize_whitespace(source: &str) -> Result<String, SyntaxError> {
 }
 fn reorder_fields(source: &str) -> String {
     let parsed = parse(source);
+    let disabled_ranges = disabled_ranges(source);
     let mut edits = Vec::new();
     for scope in parsed
         .root()
@@ -341,8 +720,10 @@ fn reorder_fields(source: &str) -> String {
     {
         let mut fields = Vec::new();
         let mut annotation_start = None;
-        let mut rank = 3;
-        let flush = |fields: &mut Vec<(usize, usize, usize)>,
+        let mut exported = false;
+        let mut onready = false;
+        let mut has_body_member = false;
+        let flush = |fields: &mut Vec<(usize, usize, (usize, bool))>,
                      edits: &mut Vec<(usize, usize, String)>| {
             if fields.windows(2).any(|pair| pair[0].2 > pair[1].2) {
                 let start = fields[0].0;
@@ -373,6 +754,14 @@ fn reorder_fields(source: &str) -> String {
             let Some(first) = member.tokens().find(|token| significant(token.kind)) else {
                 continue;
             };
+            if disabled(&disabled_ranges, member.range()) {
+                flush(&mut fields, &mut edits);
+                annotation_start = None;
+                exported = false;
+                onready = false;
+                previous_end = member.range().end;
+                continue;
+            }
             if member.kind() == K::Annotation {
                 annotation_start.get_or_insert(first.range.start);
                 let name = member
@@ -381,15 +770,16 @@ fn reorder_fields(source: &str) -> String {
                     .map(|token| &source[token.range])
                     .unwrap_or("");
                 if name == "export" || name.starts_with("export_") {
-                    rank = 1;
-                } else if name == "onready" && rank != 1 {
-                    rank = 2;
+                    exported = true;
+                } else if name == "onready" {
+                    onready = true;
                 }
                 if matches!(name, "export_group" | "export_subgroup" | "export_category") {
                     flush(&mut fields, &mut edits);
                     annotation_start = None;
                     previous_end = member.range().end;
-                    rank = 3;
+                    exported = false;
+                    onready = false;
                 }
                 continue;
             }
@@ -400,6 +790,14 @@ fn reorder_fields(source: &str) -> String {
                 .filter(|token| significant(token.kind))
                 .last()
                 .unwrap();
+            let private = member
+                .children()
+                .find(|node| node.kind() == K::Name)
+                .is_some_and(|name| {
+                    name.tokens()
+                        .find(|token| token.kind == K::Ident)
+                        .is_some_and(|token| source[token.range].starts_with('_'))
+                });
             let end = source[last.range.end..]
                 .find('\n')
                 .map_or(source.len(), |offset| last.range.end + offset + 1);
@@ -415,7 +813,10 @@ fn reorder_fields(source: &str) -> String {
                             .saturating_sub(usize::from(source[..start].ends_with("\r\n"))),
                     );
                     let line = source[previous_start..start].trim();
-                    if previous_start < previous_end || !(line.is_empty() || line.starts_with('#'))
+                    if disabled(&disabled_ranges, Span::new(previous_start, start))
+                        || previous_start < previous_end
+                        || !(line.is_empty() || line.starts_with('#'))
+                        || (!has_body_member && line.starts_with('#'))
                     {
                         break;
                     }
@@ -425,16 +826,34 @@ fn reorder_fields(source: &str) -> String {
                     start,
                     end,
                     if member.kind() == K::ConstDecl {
-                        0
+                        (0, private)
+                    } else if first.kind == K::StaticKw {
+                        (1, private)
+                    } else if exported {
+                        (2, private)
+                    } else if onready {
+                        (4, private)
                     } else {
-                        rank
+                        (3, private)
                     },
                 ));
             } else {
                 flush(&mut fields, &mut edits);
             }
-            rank = 3;
+            exported = false;
+            onready = false;
             previous_end = end;
+            if matches!(
+                member.kind(),
+                K::SignalDecl
+                    | K::EnumDecl
+                    | K::ConstDecl
+                    | K::VarDecl
+                    | K::FuncDecl
+                    | K::InnerClassDecl
+            ) {
+                has_body_member = true;
+            }
         }
         flush(&mut fields, &mut edits);
     }

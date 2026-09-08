@@ -256,7 +256,7 @@ fn exact(before: &str, after: &str) {
 fn cleans_character_script_spacing() {
     exact(
         "# autoload\nextends Node2D\n\n@onready var instance_container: Node2D = %CharacterInstances\nvar _live_instances: Array[Node2D] = []\nfunc spawn_character(definition_path: String):\n  var _ci = CharacterSpawner.build_character_from_file(definition_path)  \n  \n  _live_instances.append(_ci)\n  instance_container.add_child(_ci)\n  \nfunc clear_instances() -> void:\n  _live_instances.clear()\n\n\n",
-        "# autoload\nextends Node2D\n\n@onready var instance_container: Node2D = %CharacterInstances\n\nvar _live_instances: Array[Node2D] = []\n\n\nfunc spawn_character(definition_path: String):\n\tvar _ci = CharacterSpawner.build_character_from_file(definition_path)\n\n\t_live_instances.append(_ci)\n\tinstance_container.add_child(_ci)\n\n\nfunc clear_instances() -> void:\n\t_live_instances.clear()\n",
+        "# autoload\nextends Node2D\n\nvar _live_instances: Array[Node2D] = []\n\n@onready var instance_container: Node2D = %CharacterInstances\n\n\nfunc spawn_character(definition_path: String):\n\tvar _ci = CharacterSpawner.build_character_from_file(definition_path)\n\n\t_live_instances.append(_ci)\n\tinstance_container.add_child(_ci)\n\n\nfunc clear_instances() -> void:\n\t_live_instances.clear()\n",
     );
 }
 
@@ -264,7 +264,7 @@ fn cleans_character_script_spacing() {
 fn orders_fields_with_their_annotations_and_comments() {
     exact(
         "extends Node\nvar value = 1\n# Scene node\n@onready var child = $Child\n@export_range(0, 10)\nvar speed = 2\nconst LIMIT = 10\nconst MINIMUM = 0\nvar _internal = 3\nfunc run():\n    pass\n",
-        "extends Node\n\nconst LIMIT = 10\nconst MINIMUM = 0\n\n@export_range(0, 10)\nvar speed = 2\n\n# Scene node\n@onready var child = $Child\n\nvar value = 1\n\nvar _internal = 3\n\n\nfunc run():\n\tpass\n",
+        "extends Node\n\nconst LIMIT = 10\nconst MINIMUM = 0\n\n@export_range(0, 10)\nvar speed = 2\n\nvar value = 1\n\nvar _internal = 3\n\n# Scene node\n@onready var child = $Child\n\n\nfunc run():\n\tpass\n",
     );
 }
 
@@ -310,5 +310,61 @@ fn normalizes_independent_indent_widths_and_lambda_suites() {
     exact(
         "var callbacks = [\n    func():\n        work(),\n]\n",
         "var callbacks = [\n\tfunc():\n\t\twork(),\n]\n",
+    );
+}
+
+#[test]
+fn preserves_class_documentation_when_ordering_fields() {
+    exact(
+        "extends Node\n## Class documentation.\nvar value=1\nconst LIMIT=2\n",
+        "extends Node\n## Class documentation.\nconst LIMIT = 2\n\nvar value = 1\n",
+    );
+    exact(
+        "class Inner:\n  ## Inner documentation.\n  var value=1\n  const LIMIT=2\n",
+        "class Inner:\n\t## Inner documentation.\n\tconst LIMIT = 2\n\n\tvar value = 1\n",
+    );
+    exact(
+        "# License header.\nvar value=1\nconst LIMIT=2\n",
+        "# License header.\nconst LIMIT = 2\n\nvar value = 1\n",
+    );
+}
+
+#[test]
+fn follows_field_category_and_visibility_order() {
+    exact(
+        "@onready var child=$Child\nvar _private=1\n@export var speed=2\nstatic var cache={}\nvar public=3\nconst LIMIT=4\n",
+        "const LIMIT = 4\n\nstatic var cache = {}\n\n@export var speed = 2\n\nvar public = 3\n\nvar _private = 1\n\n@onready var child = $Child\n",
+    );
+}
+
+#[test]
+fn normalizes_inline_token_spacing() {
+    exact(
+        "func f(a:int,b=2)->void:\n  var positive=+1\n  var negative=-2\n  var child=%Child\n  var math=a%b**2\n  var dict={\"a\":1,\"b\":-2}\n  if(a==b&&not child):\n    print( a,b )# note\n",
+        "func f(a: int, b = 2) -> void:\n\tvar positive = +1\n\tvar negative = -2\n\tvar child = %Child\n\tvar math = a % b ** 2\n\tvar dict = { \"a\": 1, \"b\": -2 }\n\tif (a == b && not child):\n\t\tprint(a, b) # note\n",
+    );
+}
+
+#[test]
+fn does_not_join_tokens_across_physical_lines() {
+    exact(
+        "func f():\n  var values = [\n    1,\n    -2,\n  ]\n  var result = (\n      values[0]\n      + values[1]\n  )\n",
+        "func f():\n\tvar values = [\n\t\t1,\n\t\t-2,\n\t]\n\tvar result = (\n\t\t\tvalues[0]\n\t\t\t+ values[1]\n\t)\n",
+    );
+}
+
+#[test]
+fn preserves_disabled_formatting_regions() {
+    exact(
+        "var outside=1\n# godotkit: off\nvar raw   =   {\"x\":1}  \n# godotkit: on\nvar after=2\n",
+        "var outside = 1\n# godotkit: off\nvar raw   =   {\"x\":1}  \n# godotkit: on\nvar after = 2\n",
+    );
+}
+
+#[test]
+fn normalizes_collection_trailing_commas() {
+    exact(
+        "var single=[1,2,]\nvar values=[\n  1,\n  2\n]\nvar mapping={\n  \"value\":1 # note\n}\nenum State {IDLE,RUN,}\n",
+        "var single = [1, 2]\nvar values = [\n\t1,\n\t2,\n]\nvar mapping = {\n\t\"value\": 1, # note\n}\n\nenum State { IDLE, RUN }\n",
     );
 }
