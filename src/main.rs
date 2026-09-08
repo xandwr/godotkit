@@ -17,7 +17,7 @@ fn replace_file(path: &Path, original: &str, formatted: &str) -> io::Result<()> 
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() {
         return Err(io::Error::other(
-            "--write requires a regular file, not a symlink",
+            "input must be a regular file, not a symlink",
         ));
     }
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -53,9 +53,6 @@ fn replace_file(path: &Path, original: &str, formatted: &str) -> io::Result<()> 
 
 fn format(args: FormatArgs) -> Result<ExitCode, Box<dyn Error>> {
     let stdin = args.path == Path::new("-");
-    if args.write && stdin {
-        return Err("--write requires an input file".into());
-    }
     let mut source = String::new();
     if stdin {
         io::stdin().read_to_string(&mut source)?;
@@ -74,12 +71,12 @@ fn format(args: FormatArgs) -> Result<ExitCode, Box<dyn Error>> {
             ExitCode::from(1)
         });
     }
-    if args.write {
+    if stdin {
+        io::stdout().lock().write_all(formatted.as_bytes())?;
+    } else {
         if source != formatted {
             replace_file(&args.path, &source, &formatted)?;
         }
-    } else {
-        io::stdout().lock().write_all(formatted.as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
 }

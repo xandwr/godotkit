@@ -6,17 +6,18 @@ with parser diagnostics are rejected before producing output or writing files.
 
 ```sh
 cargo run -- format script.gd
-cargo run -- format script.gd --write
 cargo run -- format script.gd --check
+cargo run -- format - < script.gd
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
 ```
 
-Omit the path to read stdin. Output goes to stdout unless `--write` or `--check`
-is used. Check exits 1 for changes; errors exit 2. Guard width defaults to 100
-columns (`--line-width`); tabs count to the next multiple of 4. Guards with
-comments or multiline conditions stay unchanged. The ignored test needs Godot 4.7.2.
+File inputs are replaced atomically in place. Omit the path or use `-` to read
+stdin and write the formatted source to stdout. `--check` does not write and exits
+1 for changes; errors exit 2. Guard width defaults to 100 columns (`--line-width`);
+tabs count to the next multiple of 4. Guards with comments or multiline conditions
+stay unchanged. The ignored test needs Godot 4.7.2.
 
 `formatter::format_source` returns `Result<String, syntax::SyntaxError>`, reporting
 the first parser diagnostic with its byte range. It expects a complete script;

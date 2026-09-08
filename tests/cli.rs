@@ -38,34 +38,38 @@ fn stdout_and_check_have_distinct_exit_statuses() {
             .success()
     );
     assert_eq!(run(&[], "var x = [").status.code(), Some(2));
-    assert_eq!(run(&["--write"], source).status.code(), Some(2));
     assert_eq!(run(&["--line-width", "0"], source).status.code(), Some(2));
 }
 
 #[test]
-fn writes_only_when_requested_and_preserves_failed_input() {
+fn writes_files_in_place_and_preserves_failed_input() {
     let directory = std::env::temp_dir().join(format!("godotkit-test-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     let path = directory.join("guard.gd");
     let path_arg = path.to_str().unwrap();
     let source = "func f():\n    if ready:\n        return\n";
     fs::write(&path, source).unwrap();
-    assert!(run(&[path_arg], "").status.success());
-    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    let output = run(&[path_arg], "");
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    let formatted = "func f():\n\tif ready: return\n";
+    assert_eq!(fs::read_to_string(&path).unwrap(), formatted);
+    let unchanged = run(&[path_arg], "");
+    assert!(unchanged.status.success());
+    assert!(unchanged.stdout.is_empty());
+    assert!(unchanged.stderr.is_empty());
+    assert_eq!(fs::read_to_string(&path).unwrap(), formatted);
+    fs::write(&path, source).unwrap();
     assert_eq!(run(&[path_arg, "--check"], "").status.code(), Some(1));
     assert_eq!(fs::read_to_string(&path).unwrap(), source);
-    assert!(run(&[path_arg, "--write"], "").status.success());
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        "func f():\n\tif ready: return\n"
-    );
     for invalid in [
         "var x = [",
         "func f():\n    if ready:\n        return\n    var value =\n",
     ] {
         fs::write(&path, invalid).unwrap();
-        for mode in ["--write", "--check"] {
-            let output = run(&[path_arg, mode], "");
+        for args in [[path_arg].as_slice(), [path_arg, "--check"].as_slice()] {
+            let output = run(args, "");
             assert_eq!(output.status.code(), Some(2));
             assert!(output.stdout.is_empty());
             assert!(String::from_utf8_lossy(&output.stderr).contains("at byte"));
@@ -89,16 +93,9 @@ fn writes_preserve_permissions_and_refuse_symlinks() {
     fs::write(&path, source).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     symlink(&path, &link).unwrap();
-    assert_eq!(
-        run(&[link.to_str().unwrap(), "--write"], "").status.code(),
-        Some(2)
-    );
+    assert_eq!(run(&[link.to_str().unwrap()], "").status.code(), Some(2));
     assert_eq!(fs::read_to_string(&path).unwrap(), source);
-    assert!(
-        run(&[path.to_str().unwrap(), "--write"], "")
-            .status
-            .success()
-    );
+    assert!(run(&[path.to_str().unwrap()], "").status.success());
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
