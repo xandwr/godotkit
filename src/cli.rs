@@ -11,7 +11,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    #[command(about = "Compact bare-return guards in GDScript 4.7.2")]
+    #[command(about = "Format GDScript source files")]
     Format(FormatArgs),
 }
 
