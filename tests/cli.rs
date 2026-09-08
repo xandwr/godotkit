@@ -27,13 +27,13 @@ fn stdout_and_check_have_distinct_exit_statuses() {
     let source = "func f():\n    if ready:\n        return\n";
     let output = run(&[], source);
     assert!(output.status.success());
-    assert_eq!(output.stdout, b"func f():\n    if ready: return\n");
+    assert_eq!(output.stdout, b"func f():\n\tif ready: return\n");
     assert!(output.stderr.is_empty());
     let check = run(&["--check"], source);
     assert_eq!(check.status.code(), Some(1));
     assert!(check.stdout.is_empty());
     assert!(
-        run(&["--check"], "func f():\n    if ready: return\n")
+        run(&["--check"], "func f():\n\tif ready: return\n")
             .status
             .success()
     );
@@ -57,7 +57,7 @@ fn writes_only_when_requested_and_preserves_failed_input() {
     assert!(run(&[path_arg, "--write"], "").status.success());
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
-        "func f():\n    if ready: return\n"
+        "func f():\n\tif ready: return\n"
     );
     for invalid in [
         "var x = [",

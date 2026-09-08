@@ -1,7 +1,7 @@
 # godotkit
 
-A Rust formatter targeting GDScript 4.7.2. Currently compacts bare-return `if`
-guards using the owned lossless syntax tree; preserves other formatting. Inputs
+A Rust formatter targeting GDScript 4.7.2. Normalizes whitespace and orders fields using the owned lossless syntax tree,
+and compacts bare-return `if` guards. Inputs
 with parser diagnostics are rejected before producing output or writing files.
 
 ```sh
@@ -21,8 +21,22 @@ comments or multiline conditions stay unchanged. The ignored test needs Godot 4.
 `formatter::format_source` returns `Result<String, syntax::SyntaxError>`, reporting
 the first parser diagnostic with its byte range. It expects a complete script;
 statement fragments must be placed inside a function. Guard selection uses syntax
-blocks and return statements, then replaces only the whitespace between the
-header colon and bare return. No legacy lexer or fallback formatting path remains.
+blocks and return statements. No legacy lexer or fallback formatting path remains.
+
+Formatting uses tabs for indentation, removes trailing whitespace and outer blank
+lines, and collapses extra blank lines inside functions. Functions have two blank
+lines between them and after preceding fields. Field categories have one blank
+line between them, including public/private and static/instance boundaries.
+Existing single blank lines within a category preserve semantic groups.
+
+Consecutive fields are stably ordered: constants, exports, onready variables,
+then untagged variables. Attached comments and annotations move with fields.
+Functions, other declarations, and export group/category annotations act as sorting
+boundaries. Ordering can change initializer execution order across categories;
+within each category, declaration order is preserved. String contents and existing
+line endings are preserved. Missing final newlines remain missing unless field
+reordering requires a line separator. Invalid input is rejected, including mixed
+indentation diagnosed by the parser.
 
 ## Syntax parser
 
