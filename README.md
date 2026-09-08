@@ -8,6 +8,8 @@ with parser diagnostics are rejected before producing output or writing files.
 cargo run -- format script.gd
 cargo run -- format script.gd --check
 cargo run -- format - < script.gd
+cargo run -- format-project
+cargo run -- format-project --check
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
@@ -18,6 +20,11 @@ stdin and write the formatted source to stdout. `--check` does not write and exi
 1 for changes; errors exit 2. Guard width defaults to 100 columns (`--line-width`);
 tabs count to the next multiple of 4. Guards with comments or multiline conditions
 stay unchanged. The ignored test needs Godot 4.7.2.
+
+Run `format-project` from a directory containing `project.godot` to recursively
+format every `.gd` file in that project. Symlinked files and directories are not
+followed. All scripts are validated before any files are changed. Its `--check`
+mode exits 1 if any script would change without writing to the project.
 
 `formatter::format_source` returns `Result<String, syntax::SyntaxError>`, reporting
 the first parser diagnostic with its byte range. It expects a complete script;

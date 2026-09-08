@@ -22,6 +22,15 @@ fn run(args: &[&str], source: &str) -> Output {
     child.wait_with_output().unwrap()
 }
 
+fn run_project(directory: &std::path::Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_godotkit"))
+        .arg("format-project")
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn stdout_and_check_have_distinct_exit_statuses() {
     let source = "func f():\n    if ready:\n        return\n";
@@ -101,4 +110,86 @@ fn writes_preserve_permissions_and_refuse_symlinks() {
         0o600
     );
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn formats_project_scripts_recursively_and_checks_without_writing() {
+    let directory = std::env::temp_dir().join(format!("godotkit-project-{}", std::process::id()));
+    let nested = directory.join("scripts/nested");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    let first = directory.join("player.gd");
+    let second = nested.join("enemy.gd");
+    let ignored = nested.join("notes.txt");
+    let source = "func f():\n    if ready:\n        return\n";
+    let formatted = "func f():\n\tif ready: return\n";
+    fs::write(&first, source).unwrap();
+    fs::write(&second, source).unwrap();
+    fs::write(&ignored, source).unwrap();
+
+    let check = run_project(&directory, &["--check"]);
+    assert_eq!(check.status.code(), Some(1));
+    assert!(check.stdout.is_empty());
+    assert!(check.stderr.is_empty());
+    assert_eq!(fs::read_to_string(&first).unwrap(), source);
+    assert_eq!(fs::read_to_string(&second).unwrap(), source);
+
+    let output = run_project(&directory, &[]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read_to_string(&first).unwrap(), formatted);
+    assert_eq!(fs::read_to_string(&second).unwrap(), formatted);
+    assert_eq!(fs::read_to_string(&ignored).unwrap(), source);
+    assert!(run_project(&directory, &["--check"]).status.success());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn rejects_non_projects_and_validates_every_script_before_writing() {
+    let directory =
+        std::env::temp_dir().join(format!("godotkit-project-error-{}", std::process::id()));
+    let nested = directory.join("scripts");
+    fs::create_dir_all(&nested).unwrap();
+    let valid = directory.join("valid.gd");
+    let invalid = nested.join("invalid.gd");
+    let source = "func f():\n    if ready:\n        return\n";
+    fs::write(&valid, source).unwrap();
+
+    let missing_project = run_project(&directory, &[]);
+    assert_eq!(missing_project.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing_project.stderr).contains("project.godot"));
+    assert_eq!(fs::read_to_string(&valid).unwrap(), source);
+
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(&invalid, "var value = [").unwrap();
+    let failed = run_project(&directory, &[]);
+    assert_eq!(failed.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("invalid.gd"));
+    assert_eq!(fs::read_to_string(&valid).unwrap(), source);
+    assert_eq!(fs::read_to_string(&invalid).unwrap(), "var value = [");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn project_formatting_does_not_follow_symlinks() {
+    use std::os::unix::fs::symlink;
+    let directory =
+        std::env::temp_dir().join(format!("godotkit-project-links-{}", std::process::id()));
+    let external =
+        std::env::temp_dir().join(format!("godotkit-project-external-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    fs::create_dir(&external).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    let source = "func f():\n    if ready:\n        return\n";
+    let external_script = external.join("external.gd");
+    fs::write(&external_script, source).unwrap();
+    symlink(&external_script, directory.join("linked.gd")).unwrap();
+    symlink(&external, directory.join("linked_directory")).unwrap();
+
+    assert!(run_project(&directory, &[]).status.success());
+    assert_eq!(fs::read_to_string(&external_script).unwrap(), source);
+    fs::remove_dir_all(directory).unwrap();
+    fs::remove_dir_all(external).unwrap();
 }

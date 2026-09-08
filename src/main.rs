@@ -2,16 +2,17 @@ mod cli;
 
 use std::{
     error::Error,
+    ffi::OsStr,
     fs,
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use clap::Parser;
 use godotkit::formatter::{Options, format_source};
 
-use cli::{Cli, Command, FormatArgs};
+use cli::{Cli, Command, FormatArgs, FormatProjectArgs};
 
 fn replace_file(path: &Path, original: &str, formatted: &str) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
@@ -81,9 +82,66 @@ fn format(args: FormatArgs) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn collect_gdscript_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                directories.push(path);
+            } else if file_type.is_file() && path.extension() == Some(OsStr::new("gd")) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn format_project(args: FormatProjectArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let root = std::env::current_dir()?;
+    let project_file = root.join("project.godot");
+    if !project_file.is_file() {
+        return Err(format!(
+            "{} is not a Godot project root: project.godot is missing or not a file",
+            root.display()
+        )
+        .into());
+    }
+    let options = Options {
+        line_width: usize::from(args.line_width),
+        ..Options::default()
+    };
+    let mut changes = Vec::new();
+    for path in collect_gdscript_files(&root)? {
+        let source =
+            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let formatted = format_source(&source, &options)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if source != formatted {
+            changes.push((path, source, formatted));
+        }
+    }
+    if args.check {
+        return Ok(if changes.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
+    }
+    for (path, source, formatted) in changes {
+        replace_file(&path, &source, &formatted)?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Format(args) => format(args),
+        Command::FormatProject(args) => format_project(args),
     };
     match result {
         Ok(code) => code,
