@@ -12,7 +12,7 @@ use std::{
 use clap::Parser;
 use godotkit::formatter::{Options, format_source};
 
-use cli::{Cli, Command, FormatArgs, FormatProjectArgs};
+use cli::{Cli, Command, FormatArgs, FormatProjectArgs, SceneTreeArgs};
 
 fn replace_file(path: &Path, original: &str, formatted: &str) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
@@ -138,10 +138,19 @@ fn format_project(args: FormatProjectArgs) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn scene_tree(args: SceneTreeArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let source = fs::read_to_string(&args.path)?;
+    let scene = godotkit::scene::parse(&source)
+        .map_err(|error| format!("{}: {error}", args.path.display()))?;
+    print!("{}", scene.compact_tree()?);
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Format(args) => format(args),
         Command::FormatProject(args) => format_project(args),
+        Command::SceneTree(args) => scene_tree(args),
     };
     match result {
         Ok(code) => code,

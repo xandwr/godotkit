@@ -10,10 +10,17 @@ cargo run -- format script.gd --check
 cargo run -- format - < script.gd
 cargo run -- format-project
 cargo run -- format-project --check
+cargo run -- scene-tree scene.tscn
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
 ```
+
+`scene-tree` reads a Godot text scene and prints its literal node hierarchy without
+loading the project or running Godot. Native types, attached scripts, scene
+instances, and owner-unique names are included while serialized properties and
+resource contents are omitted. Nodes inherited from a base scene are identified
+when their type is not present in the text scene.
 
 File inputs are replaced atomically in place. Omit the path or use `-` to read
 stdin and write the formatted source to stdout. `--check` does not write and exits

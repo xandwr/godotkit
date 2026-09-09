@@ -15,6 +15,14 @@ pub enum Command {
     Format(FormatArgs),
     #[command(about = "Format every GDScript file in the current Godot project")]
     FormatProject(FormatProjectArgs),
+    #[command(about = "Print a compact tree for a Godot text scene")]
+    SceneTree(SceneTreeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SceneTreeArgs {
+    #[arg(help = "Godot text scene to inspect")]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Args)]

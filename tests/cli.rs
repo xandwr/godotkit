@@ -31,6 +31,14 @@ fn run_project(directory: &std::path::Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn run_scene_tree(path: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_godotkit"))
+        .arg("scene-tree")
+        .arg(path)
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn stdout_and_check_have_distinct_exit_statuses() {
     let source = "func f():\n    if ready:\n        return\n";
@@ -192,4 +200,19 @@ fn project_formatting_does_not_follow_symlinks() {
     assert_eq!(fs::read_to_string(&external_script).unwrap(), source);
     fs::remove_dir_all(directory).unwrap();
     fs::remove_dir_all(external).unwrap();
+}
+
+#[test]
+fn prints_compact_scene_trees_without_writing() {
+    let directory = std::env::temp_dir().join(format!("godotkit-scene-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("menu.tscn");
+    let source = "[gd_scene format=3]\n\n[node name=\"Menu\" type=\"Control\"]\n\n[node name=\"Label\" type=\"Label\" parent=\".\"]\n";
+    fs::write(&path, source).unwrap();
+    let output = run_scene_tree(&path);
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"Menu : Control\n\\- Label : Label\n");
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    fs::remove_dir_all(directory).unwrap();
 }
