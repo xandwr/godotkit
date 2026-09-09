@@ -11,6 +11,8 @@ cargo run -- format - < script.gd
 cargo run -- format-project
 cargo run -- format-project --check
 cargo run -- scene-tree scene.tscn
+cargo run -- scene-tree scene.tscn --expand
+cargo run -- scene-tree scene.tscn --expand-depth 2
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
@@ -20,7 +22,29 @@ GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
 loading the project or running Godot. Native types, attached scripts, scene
 instances, and owner-unique names are included while serialized properties and
 resource contents are omitted. Nodes inherited from a base scene are identified
-when their type is not present in the text scene.
+when their type is not present in the text scene. `--expand` recursively resolves
+packed scene instances and inherited base scenes, while `--expand-depth` limits
+resolution to a specific number of instance edges. Expanded nodes include their
+origin scene. Expansion depths are capped at 64, cycles are rejected, and
+`res://` paths are resolved from the nearest ancestor containing `project.godot`.
+
+Use `--connections` to show outgoing signal connections beneath each source node,
+and `--groups` to show saved group memberships. Both switches can be combined
+with each other and with instance expansion:
+
+```sh
+godotkit scene-tree player.tscn --connections
+godotkit scene-tree player.tscn --groups
+godotkit scene-tree player.tscn --expand --connections --groups
+```
+
+Connection targets use the root name, `%Name` for known owner-unique nodes, or
+the scene-relative node path. Saved flags, binds, and unbinds appear when present.
+Signal argument names are not stored in scene connection records, so signatures
+are not inferred from scripts. Connections and groups created at runtime are not
+included. With expansion, saved memberships are merged and connection targets
+are resolved within their instance. Sources absent from the literal hierarchy
+are shown as inherited placeholders when connections are requested.
 
 File inputs are replaced atomically in place. Omit the path or use `-` to read
 stdin and write the formatted source to stdout. `--check` does not write and exits

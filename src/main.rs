@@ -139,10 +139,25 @@ fn format_project(args: FormatProjectArgs) -> Result<ExitCode, Box<dyn Error>> {
 }
 
 fn scene_tree(args: SceneTreeArgs) -> Result<ExitCode, Box<dyn Error>> {
-    let source = fs::read_to_string(&args.path)?;
-    let scene = godotkit::scene::parse(&source)
-        .map_err(|error| format!("{}: {error}", args.path.display()))?;
-    print!("{}", scene.compact_tree()?);
+    let options = godotkit::scene::TreeOptions {
+        connections: args.connections,
+        groups: args.groups,
+    };
+    if let Some(depth) = args
+        .expand_depth
+        .map(usize::from)
+        .or(args.expand.then_some(64))
+    {
+        print!(
+            "{}",
+            godotkit::scene::compact_tree_expanded_with_options(&args.path, depth, options)?
+        );
+    } else {
+        let source = fs::read_to_string(&args.path)?;
+        let scene = godotkit::scene::parse(&source)
+            .map_err(|error| format!("{}: {error}", args.path.display()))?;
+        print!("{}", scene.compact_tree_with_options(options)?);
+    }
     Ok(ExitCode::SUCCESS)
 }
 

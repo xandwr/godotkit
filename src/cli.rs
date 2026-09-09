@@ -23,6 +23,18 @@ pub enum Command {
 pub struct SceneTreeArgs {
     #[arg(help = "Godot text scene to inspect")]
     pub path: PathBuf,
+    #[arg(long, help = "Show outgoing signal connections under each node")]
+    pub connections: bool,
+    #[arg(long, help = "Show saved group memberships under each node")]
+    pub groups: bool,
+    #[arg(
+        long,
+        conflicts_with = "expand_depth",
+        help = "Recursively expand scene instances"
+    )]
+    pub expand: bool,
+    #[arg(long, value_name = "DEPTH", value_parser = clap::value_parser!(u8).range(1..=64), help = "Expand scene instances up to this depth")]
+    pub expand_depth: Option<u8>,
 }
 
 #[derive(Debug, Args)]
