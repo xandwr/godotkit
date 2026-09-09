@@ -11,7 +11,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    #[command(about = "Format GDScript source files")]
+    #[command(about = "Format a GDScript source file")]
     Format(FormatArgs),
     #[command(about = "Format every GDScript file in the current Godot project")]
     FormatProject(FormatProjectArgs),
