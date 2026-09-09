@@ -1,4 +1,4 @@
-use godotkit::syntax::parse;
+use gdkit::syntax::parse;
 use std::process::Command;
 
 #[test]

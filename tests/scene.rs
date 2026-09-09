@@ -1,4 +1,4 @@
-use godotkit::scene::parse;
+use gdkit::scene::parse;
 
 #[test]
 fn renders_literal_nodes_scripts_instances_and_unique_names() {

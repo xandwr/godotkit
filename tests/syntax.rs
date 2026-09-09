@@ -1,4 +1,4 @@
-use godotkit::syntax::{
+use gdkit::syntax::{
     Node, SyntaxKind as K,
     ast::{AstNode, Binary, Function},
     parse, tokenize,

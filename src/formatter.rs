@@ -37,10 +37,10 @@ fn disabled_ranges(source: &str) -> Vec<Span> {
             continue;
         }
         match source[token.range].trim() {
-            "# godotkit: off" if start.is_none() => {
+            "# gdkit: off" if start.is_none() => {
                 start = Some(line_start(source, token.range.start));
             }
-            "# godotkit: on" if start.is_some() => {
+            "# gdkit: on" if start.is_some() => {
                 ranges.push(Span::new(
                     start.take().unwrap(),
                     line_end(source, token.range.end),

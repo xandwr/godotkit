@@ -10,7 +10,7 @@ use std::{
 };
 
 use clap::Parser;
-use godotkit::formatter::{Options, format_source};
+use gdkit::formatter::{Options, format_source};
 
 use cli::{Cli, Command, FormatArgs, FormatProjectArgs, SceneTreeArgs};
 
@@ -24,7 +24,7 @@ fn replace_file(path: &Path, original: &str, formatted: &str) -> io::Result<()> 
     let parent = path.parent().unwrap_or(Path::new("."));
     let mut attempt = 0;
     let (temporary, mut file) = loop {
-        let temporary = parent.join(format!(".godotkit-{}-{attempt}.tmp", std::process::id()));
+        let temporary = parent.join(format!(".gdkit-{}-{attempt}.tmp", std::process::id()));
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -139,7 +139,7 @@ fn format_project(args: FormatProjectArgs) -> Result<ExitCode, Box<dyn Error>> {
 }
 
 fn scene_tree(args: SceneTreeArgs) -> Result<ExitCode, Box<dyn Error>> {
-    let options = godotkit::scene::TreeOptions {
+    let options = gdkit::scene::TreeOptions {
         connections: args.connections,
         groups: args.groups,
     };
@@ -150,11 +150,11 @@ fn scene_tree(args: SceneTreeArgs) -> Result<ExitCode, Box<dyn Error>> {
     {
         print!(
             "{}",
-            godotkit::scene::compact_tree_expanded_with_options(&args.path, depth, options)?
+            gdkit::scene::compact_tree_expanded_with_options(&args.path, depth, options)?
         );
     } else {
         let source = fs::read_to_string(&args.path)?;
-        let scene = godotkit::scene::parse(&source)
+        let scene = gdkit::scene::parse(&source)
             .map_err(|error| format!("{}: {error}", args.path.display()))?;
         print!("{}", scene.compact_tree_with_options(options)?);
     }

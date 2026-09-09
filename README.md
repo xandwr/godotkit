@@ -1,4 +1,4 @@
-# godotkit
+# gdkit
 
 A Rust formatter targeting GDScript 4.7.2. Normalizes whitespace and orders fields using the owned lossless syntax tree,
 and compacts bare-return `if` guards. Inputs
@@ -33,9 +33,9 @@ and `--groups` to show saved group memberships. Both switches can be combined
 with each other and with instance expansion:
 
 ```sh
-godotkit scene-tree player.tscn --connections
-godotkit scene-tree player.tscn --groups
-godotkit scene-tree player.tscn --expand --connections --groups
+gdkit scene-tree player.tscn --connections
+gdkit scene-tree player.tscn --groups
+gdkit scene-tree player.tscn --expand --connections --groups
 ```
 
 Connection targets use the root name, `%Name` for known owner-unique nodes, or
@@ -85,19 +85,19 @@ indentation diagnosed by the parser.
 Formatting can be disabled for a region without weakening syntax validation:
 
 ```gdscript
-# godotkit: off
+# gdkit: off
 var deliberately   =   spaced
-# godotkit: on
+# gdkit: on
 ```
 
 ## Syntax parser
 
-`godotkit::syntax::parse` provides a local, lossless GDScript parser adapted from
+`gdkit::syntax::parse` provides a local, lossless GDScript parser adapted from
 `gdscript-syntax`. It returns a source-backed concrete syntax tree and byte-ranged
 diagnostics, including on malformed input.
 
 ```rust
-use godotkit::syntax::{ast::{AstNode, Function}, parse};
+use gdkit::syntax::{ast::{AstNode, Function}, parse};
 
 let source = "func greet(name: String): return name\n";
 let parsed = parse(source);

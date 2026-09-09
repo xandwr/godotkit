@@ -1,4 +1,4 @@
-use godotkit::scene::{TreeOptions, parse};
+use gdkit::scene::{TreeOptions, parse};
 use std::{fs, process::Command};
 
 const SCENE: &str = r#"[gd_scene format=3]
@@ -59,7 +59,7 @@ fn parses_group_names_and_reports_malformed_relationships() {
 #[test]
 fn cli_switches_are_independent_and_preserve_scene_files() {
     let directory =
-        std::env::temp_dir().join(format!("godotkit-relationships-{}", std::process::id()));
+        std::env::temp_dir().join(format!("gdkit-relationships-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("player.tscn");
     fs::write(&path, SCENE).unwrap();
@@ -70,7 +70,7 @@ fn cli_switches_are_independent_and_preserve_scene_files() {
         (vec!["--connections", "--groups"], true, true),
         (vec!["--expand", "--connections", "--groups"], true, true),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_godotkit"))
+        let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
             .arg("scene-tree")
             .arg(&path)
             .args(args)
@@ -95,7 +95,7 @@ fn cli_switches_are_independent_and_preserve_scene_files() {
 #[test]
 fn expansion_merges_groups_and_rebases_connection_targets() {
     let directory = std::env::temp_dir().join(format!(
-        "godotkit-expanded-relationships-{}",
+        "gdkit-expanded-relationships-{}",
         std::process::id()
     ));
     fs::create_dir_all(&directory).unwrap();
@@ -113,7 +113,7 @@ fn expansion_merges_groups_and_rebases_connection_targets() {
 "#,
     )
     .unwrap();
-    let output = godotkit::scene::compact_tree_expanded_with_options(
+    let output = gdkit::scene::compact_tree_expanded_with_options(
         &path,
         1,
         TreeOptions {

@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use godotkit::{
+use gdkit::{
     formatter::{Options, format_source},
     syntax::parse,
 };

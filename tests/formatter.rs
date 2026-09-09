@@ -1,4 +1,4 @@
-use godotkit::{
+use gdkit::{
     formatter::{Options, format_source},
     syntax::parse,
 };
@@ -27,9 +27,9 @@ fn check(before: &str, after: &str) {
         .filter(|token| {
             matches!(
                 token.kind,
-                godotkit::syntax::SyntaxKind::String
-                    | godotkit::syntax::SyntaxKind::StringName
-                    | godotkit::syntax::SyntaxKind::NodePath
+                gdkit::syntax::SyntaxKind::String
+                    | gdkit::syntax::SyntaxKind::StringName
+                    | gdkit::syntax::SyntaxKind::NodePath
             )
         })
         .map(|token| token.range)
@@ -356,8 +356,8 @@ fn does_not_join_tokens_across_physical_lines() {
 #[test]
 fn preserves_disabled_formatting_regions() {
     exact(
-        "var outside=1\n# godotkit: off\nvar raw   =   {\"x\":1}  \n# godotkit: on\nvar after=2\n",
-        "var outside = 1\n# godotkit: off\nvar raw   =   {\"x\":1}  \n# godotkit: on\nvar after = 2\n",
+        "var outside=1\n# gdkit: off\nvar raw   =   {\"x\":1}  \n# gdkit: on\nvar after=2\n",
+        "var outside = 1\n# gdkit: off\nvar raw   =   {\"x\":1}  \n# gdkit: on\nvar after = 2\n",
     );
 }
 

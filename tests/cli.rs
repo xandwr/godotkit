@@ -5,7 +5,7 @@ use std::{
 };
 
 fn run(args: &[&str], source: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_godotkit"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .arg("format")
         .args(args)
         .stdin(Stdio::piped())
@@ -23,7 +23,7 @@ fn run(args: &[&str], source: &str) -> Output {
 }
 
 fn run_project(directory: &std::path::Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_godotkit"))
+    Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .arg("format-project")
         .args(args)
         .current_dir(directory)
@@ -32,7 +32,7 @@ fn run_project(directory: &std::path::Path, args: &[&str]) -> Output {
 }
 
 fn run_scene_tree(path: &std::path::Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_godotkit"))
+    Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .arg("scene-tree")
         .arg(path)
         .args(args)
@@ -61,7 +61,7 @@ fn stdout_and_check_have_distinct_exit_statuses() {
 
 #[test]
 fn writes_files_in_place_and_preserves_failed_input() {
-    let directory = std::env::temp_dir().join(format!("godotkit-test-{}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("gdkit-test-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     let path = directory.join("guard.gd");
     let path_arg = path.to_str().unwrap();
@@ -102,8 +102,7 @@ fn writes_files_in_place_and_preserves_failed_input() {
 #[test]
 fn writes_preserve_permissions_and_refuse_symlinks() {
     use std::os::unix::fs::{PermissionsExt, symlink};
-    let directory =
-        std::env::temp_dir().join(format!("godotkit-permissions-{}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("gdkit-permissions-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     let path = directory.join("guard.gd");
     let link = directory.join("link.gd");
@@ -123,7 +122,7 @@ fn writes_preserve_permissions_and_refuse_symlinks() {
 
 #[test]
 fn formats_project_scripts_recursively_and_checks_without_writing() {
-    let directory = std::env::temp_dir().join(format!("godotkit-project-{}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("gdkit-project-{}", std::process::id()));
     let nested = directory.join("scripts/nested");
     fs::create_dir_all(&nested).unwrap();
     fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
@@ -157,7 +156,7 @@ fn formats_project_scripts_recursively_and_checks_without_writing() {
 #[test]
 fn rejects_non_projects_and_validates_every_script_before_writing() {
     let directory =
-        std::env::temp_dir().join(format!("godotkit-project-error-{}", std::process::id()));
+        std::env::temp_dir().join(format!("gdkit-project-error-{}", std::process::id()));
     let nested = directory.join("scripts");
     fs::create_dir_all(&nested).unwrap();
     let valid = directory.join("valid.gd");
@@ -185,9 +184,9 @@ fn rejects_non_projects_and_validates_every_script_before_writing() {
 fn project_formatting_does_not_follow_symlinks() {
     use std::os::unix::fs::symlink;
     let directory =
-        std::env::temp_dir().join(format!("godotkit-project-links-{}", std::process::id()));
+        std::env::temp_dir().join(format!("gdkit-project-links-{}", std::process::id()));
     let external =
-        std::env::temp_dir().join(format!("godotkit-project-external-{}", std::process::id()));
+        std::env::temp_dir().join(format!("gdkit-project-external-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     fs::create_dir(&external).unwrap();
     fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
@@ -205,7 +204,7 @@ fn project_formatting_does_not_follow_symlinks() {
 
 #[test]
 fn prints_compact_scene_trees_without_writing() {
-    let directory = std::env::temp_dir().join(format!("godotkit-scene-{}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("gdkit-scene-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     let path = directory.join("menu.tscn");
     let source = "[gd_scene format=3]\n\n[node name=\"Menu\" type=\"Control\"]\n\n[node name=\"Label\" type=\"Label\" parent=\".\"]\n";
@@ -221,7 +220,7 @@ fn prints_compact_scene_trees_without_writing() {
 #[test]
 fn expands_scene_instances_to_the_requested_depth_and_resolves_inheritance() {
     let directory =
-        std::env::temp_dir().join(format!("godotkit-scene-expansion-{}", std::process::id()));
+        std::env::temp_dir().join(format!("gdkit-scene-expansion-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
     fs::write(
@@ -261,8 +260,7 @@ fn expands_scene_instances_to_the_requested_depth_and_resolves_inheritance() {
 
 #[test]
 fn detects_scene_instance_cycles_and_validates_expansion_options() {
-    let directory =
-        std::env::temp_dir().join(format!("godotkit-scene-cycle-{}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("gdkit-scene-cycle-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
     let first = directory.join("first.tscn");
