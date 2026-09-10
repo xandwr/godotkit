@@ -2,10 +2,9 @@ mod cli;
 
 use std::{
     error::Error,
-    ffi::OsStr,
     fs,
     io::{self, Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     process::ExitCode,
 };
 
@@ -82,41 +81,26 @@ fn format(args: FormatArgs) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn collect_gdscript_files(root: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut directories = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            let path = entry.path();
-            if file_type.is_dir() {
-                directories.push(path);
-            } else if file_type.is_file() && path.extension() == Some(OsStr::new("gd")) {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
 fn format_project(args: FormatProjectArgs) -> Result<ExitCode, Box<dyn Error>> {
     let root = std::env::current_dir()?;
-    let project_file = root.join("project.godot");
-    if !project_file.is_file() {
-        return Err(format!(
-            "{} is not a Godot project root: project.godot is missing or not a file",
-            root.display()
-        )
-        .into());
-    }
+    let project = gdview::Project::open(&root).map_err(|error| -> Box<dyn Error> {
+        match error {
+            gdview::ProjectError::NotFound { .. } | gdview::ProjectError::ConfigNotAFile { .. } => {
+                format!(
+                    "{} is not a Godot project root: project.godot is missing or not a file",
+                    root.display()
+                )
+                .into()
+            }
+            error => Box::new(error),
+        }
+    })?;
     let options = Options {
         line_width: usize::from(args.line_width),
         ..Options::default()
     };
     let mut changes = Vec::new();
-    for path in collect_gdscript_files(&root)? {
+    for path in project.script_files()? {
         let source =
             fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let formatted = format_source(&source, &options)

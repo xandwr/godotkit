@@ -1,6 +1,6 @@
 # gdkit
 
-A Rust formatter targeting GDScript 4.7.2. Normalizes whitespace and orders fields using the owned lossless syntax tree,
+A Rust formatter targeting GDScript 4.7.2. Normalizes whitespace and orders fields using gdview's lossless syntax tree,
 and compacts bare-return `if` guards. Inputs
 with parser diagnostics are rejected before producing output or writing files.
 
@@ -92,8 +92,9 @@ var deliberately   =   spaced
 
 ## Syntax parser
 
-`gdkit::syntax::parse` provides a local, lossless GDScript parser adapted from
-`gdscript-syntax`. It returns a source-backed concrete syntax tree and byte-ranged
+`gdkit::syntax` re-exports the lossless GDScript frontend from
+[gdview](https://github.com/xandwr/gdview), pinned to a Git revision in `Cargo.toml`.
+`gdkit::syntax::parse` returns a source-backed concrete syntax tree and byte-ranged
 diagnostics, including on malformed input.
 
 ```rust
@@ -116,12 +117,13 @@ original source; comments, whitespace, spelling, and line endings are retained.
 layout markers. `root().descendants()` includes the root. `debug_tree()` renders
 node kinds, spans, and token text.
 
-The implementation owns its lexer, indentation handling, recursive-descent/Pratt
+The gdview implementation provides its lexer, indentation handling, recursive-descent/Pratt
 parser, and arena tree. Declarative macros generate token metadata, operator
 classification, typed node wrappers, and the `ast::Expression` enum. Expression
 wrapping uses forward links instead of inserting into an event vector. Tree
-traversal and destruction do not recurse through nested nodes. `unicode-ident`
-is the only additional runtime dependency, supplying Unicode identifier tables.
+traversal and destruction do not recurse through nested nodes. Project formatting
+also uses gdview to validate the current project root and enumerate scripts;
+formatting rules and file writes remain in gdkit.
 
 Coverage includes declarations, abstract signatures, typed variadic parameters,
 property accessors, nested classes, annotations, match patterns and guards,

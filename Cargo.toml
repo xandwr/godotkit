@@ -6,4 +6,4 @@ description = "A lightweight Rust utility belt for Godot."
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
-unicode-ident = "1.0.24"
+gdview = { git = "https://github.com/xandwr/gdview", rev = "9492ed30e433b684bdfa34d7f3aaaa7ff786e58f" }
