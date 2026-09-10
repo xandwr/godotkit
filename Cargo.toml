@@ -5,6 +5,7 @@ edition = "2024"
 description = "A lightweight Rust utility belt for Godot."
 
 [dependencies]
+anstream = "1.0"
 clap = { version = "4.6.6", features = ["derive"] }
 gdview = { git = "https://github.com/xandwr/gdview", rev = "9492ed30e433b684bdfa34d7f3aaaa7ff786e58f" }
 serde = { version = "1.0.228", features = ["derive"] }

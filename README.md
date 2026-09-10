@@ -57,6 +57,10 @@ error or a resource fails to load, and exits 2 for tooling failures such as a
 missing project, invalid configuration, or incompatible engine. This checks
 resource loading, not gameplay execution or a complete C# build.
 
+The final summary explicitly says `check passed` or `check failed`, colored green
+or red in a terminal. Redirected output is plain text by default; `NO_COLOR`
+disables color.
+
 Engine selection does not change the syntax supported by the gdview formatter.
 
 ## Test engine

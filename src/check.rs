@@ -98,6 +98,24 @@ fn harness_result(output: &Output) -> Result<HarnessResult, Box<dyn Error>> {
     Ok(serde_json::from_str(result)?)
 }
 
+fn print_summary(failed: bool, counts: Option<&Counts>) -> io::Result<()> {
+    let (color, status) = if failed {
+        (31, "check failed")
+    } else {
+        (32, "check passed")
+    };
+    let mut output = anstream::stdout();
+    write!(output, "\x1b[{color}m{status}")?;
+    if let Some(counts) = counts {
+        write!(
+            output,
+            ": checked {} scripts, {} scenes, {} resources",
+            counts.scripts, counts.scenes, counts.resources
+        )?;
+    }
+    writeln!(output, "\x1b[0m")
+}
+
 pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let project = crate::engine::project_root(&args.project)?;
     let engine = crate::engine::resolve(&project, args.godot.as_deref())?;
@@ -122,7 +140,10 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     write_diagnostics(&check)?;
     let result = match harness_result(&check) {
         Ok(result) => result,
-        Err(_) if check_failed => return Ok(ExitCode::from(1)),
+        Err(_) if check_failed => {
+            print_summary(true, None)?;
+            return Ok(ExitCode::from(1));
+        }
         Err(error) => return Err(error),
     };
     failed |= check_failed || !result.failures.is_empty();
@@ -130,10 +151,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         eprintln!("error: failed to load {path}");
     }
 
-    println!(
-        "checked {} scripts, {} scenes, {} resources",
-        result.counts.scripts, result.counts.scenes, result.counts.resources
-    );
+    print_summary(failed, Some(&result.counts))?;
     Ok(if failed {
         ExitCode::from(1)
     } else {

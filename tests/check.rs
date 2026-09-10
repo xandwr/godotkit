@@ -70,6 +70,7 @@ fn checks_project_scripts_scenes_and_resources() {
     .unwrap();
 
     let clean = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env("NO_COLOR", "1")
         .env_remove("GDKIT_GODOT")
         .args(["check", directory.to_str().unwrap()])
         .output()
@@ -81,7 +82,19 @@ fn checks_project_scripts_scenes_and_resources() {
     );
     assert_eq!(
         String::from_utf8(clean.stdout).unwrap(),
-        "checked 1 scripts, 1 scenes, 1 resources\n"
+        "check passed: checked 1 scripts, 1 scenes, 1 resources\n"
+    );
+    let colored = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
+        .env_remove("NO_COLOR")
+        .env("CLICOLOR_FORCE", "1")
+        .args(["check", directory.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(colored.status.success());
+    assert_eq!(
+        String::from_utf8(colored.stdout).unwrap(),
+        "\x1b[32mcheck passed: checked 1 scripts, 1 scenes, 1 resources\x1b[0m\n"
     );
 
     fs::write(
@@ -90,11 +103,13 @@ fn checks_project_scripts_scenes_and_resources() {
 	)
 	.unwrap();
     let broken = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env("NO_COLOR", "1")
         .env_remove("GDKIT_GODOT")
         .args(["check", directory.to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(broken.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&broken.stdout).starts_with("check failed:"));
     assert!(String::from_utf8_lossy(&broken.stderr).contains("missing.gd"));
 
     fs::remove_file(directory.join("broken.tscn")).unwrap();
@@ -104,11 +119,15 @@ fn checks_project_scripts_scenes_and_resources() {
     )
     .unwrap();
     let invalid_script = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("NO_COLOR")
+        .env("CLICOLOR_FORCE", "1")
         .env_remove("GDKIT_GODOT")
         .args(["check", directory.to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(invalid_script.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&invalid_script.stdout).starts_with("\x1b[31mcheck failed:"));
+    assert!(String::from_utf8_lossy(&invalid_script.stdout).ends_with("\x1b[0m\n"));
     assert!(String::from_utf8_lossy(&invalid_script.stderr).contains("broken.gd"));
     fs::remove_dir_all(directory).unwrap();
 }
