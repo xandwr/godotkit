@@ -18,6 +18,19 @@ cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
 ```
 
+## Pinned Godot
+
+Godot 4.7.2 is pinned in `godot.lock.json` for engine-backed validation. On Windows,
+provision the official editor into the repository-local `.tools` directory with:
+
+```powershell
+pwsh -File scripts/provision-godot.ps1
+```
+
+The provisioner verifies the archive checksum and engine version, enables Godot's
+self-contained mode, and prints the path to the console executable. Re-running it
+reuses an installation that still matches the lock.
+
 `scene-tree` reads a Godot text scene and prints its literal node hierarchy without
 loading the project or running Godot. Native types, attached scripts, scene
 instances, and owner-unique names are included while serialized properties and
