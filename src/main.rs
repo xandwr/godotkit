@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use gdkit::formatter::{Options, format_source};
 
 use cli::{Cli, Command, FormatArgs, FormatProjectArgs, SceneTreeArgs};
@@ -146,6 +146,15 @@ fn scene_tree(args: SceneTreeArgs) -> Result<ExitCode, Box<dyn Error>> {
 }
 
 fn main() -> ExitCode {
+    if std::env::args_os().len() == 1 {
+        return match Cli::command().print_help() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let result = match Cli::parse().command {
         Command::Format(args) => format(args),
         Command::FormatProject(args) => format_project(args),
