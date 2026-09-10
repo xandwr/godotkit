@@ -1,15 +1,58 @@
 use std::{fs, process::Command};
 
 #[test]
-#[ignore = "requires the provisioned Godot 4.7.2 editor"]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
 fn checks_project_scripts_scenes_and_resources() {
-    let directory = std::env::temp_dir().join(format!("gdkit-check-{}", std::process::id()));
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".tools")
+        .join(format!("gdkit-check-{}", std::process::id()));
+    fs::create_dir_all(directory.parent().unwrap()).unwrap();
     fs::create_dir(&directory).unwrap();
     fs::write(
         directory.join("project.godot"),
         "config_version=5\n[application]\nconfig/name=\"gdkit check test\"\n",
     )
     .unwrap();
+
+    let initialized = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .arg("init")
+        .arg("--godot")
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let config = fs::read_to_string(directory.join("gdkit.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let configured = parsed["engine"]["executable"].as_str().unwrap();
+    assert_eq!(
+        fs::canonicalize(directory.join(configured)).unwrap(),
+        fs::canonicalize(&engine).unwrap()
+    );
+    if pathdiff::diff_paths(
+        fs::canonicalize(&engine).unwrap(),
+        fs::canonicalize(&directory).unwrap(),
+    )
+    .is_some()
+    {
+        assert!(std::path::Path::new(configured).is_relative());
+    }
+    let repeated = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .args(["init", "--godot", "missing-engine"])
+        .output()
+        .unwrap();
+    assert_eq!(repeated.status.code(), Some(2));
+    assert_eq!(
+        fs::read_to_string(directory.join("gdkit.toml")).unwrap(),
+        config
+    );
     fs::write(
         directory.join("player.gd"),
         "extends Node\n\nvar health: int = 100\n",
@@ -27,6 +70,7 @@ fn checks_project_scripts_scenes_and_resources() {
     .unwrap();
 
     let clean = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
         .args(["check", directory.to_str().unwrap()])
         .output()
         .unwrap();
@@ -46,6 +90,7 @@ fn checks_project_scripts_scenes_and_resources() {
 	)
 	.unwrap();
     let broken = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
         .args(["check", directory.to_str().unwrap()])
         .output()
         .unwrap();
@@ -59,10 +104,57 @@ fn checks_project_scripts_scenes_and_resources() {
     )
     .unwrap();
     let invalid_script = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
         .args(["check", directory.to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(invalid_script.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&invalid_script.stderr).contains("broken.gd"));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn engine_configuration_errors_and_precedence() {
+    let directory = std::env::temp_dir().join(format!("gdkit-config-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    let run = |args: &[&str], environment: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_gdkit"));
+        command
+            .current_dir(&directory)
+            .env_remove("GDKIT_GODOT")
+            .args(args);
+        if let Some(value) = environment {
+            command.env("GDKIT_GODOT", value);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        String::from_utf8(output.stderr).unwrap()
+    };
+    assert!(run(&["check"], None).contains("gdkit init --godot"));
+    assert!(run(&["init", "--godot", "missing-init"], None).contains("missing-init"));
+    assert!(!directory.join("gdkit.toml").exists());
+    assert!(
+        run(&["init", "--godot", env!("CARGO_BIN_EXE_gdkit")], None).contains("headless editor")
+    );
+    assert!(!directory.join("gdkit.toml").exists());
+    fs::write(
+        directory.join("gdkit.toml"),
+        "[engine]\nexecutable = '../missing-config'\n",
+    )
+    .unwrap();
+    assert!(run(&["check"], None).contains("missing-config"));
+    assert!(run(&["check"], Some("missing-env")).contains("missing-env"));
+    assert!(
+        run(
+            &["check", "--godot", "missing-explicit"],
+            Some("missing-env")
+        )
+        .contains("missing-explicit")
+    );
+    fs::write(directory.join("gdkit.toml"), "invalid toml [").unwrap();
+    assert!(run(&["check"], None).contains("gdkit.toml"));
+    fs::remove_file(directory.join("project.godot")).unwrap();
+    assert!(run(&["init", "--godot", "missing-init"], None).contains("project"));
     fs::remove_dir_all(directory).unwrap();
 }

@@ -13,15 +13,56 @@ cargo run -- format-project --check
 cargo run -- scene-tree scene.tscn
 cargo run -- scene-tree scene.tscn --expand
 cargo run -- scene-tree scene.tscn --expand-depth 2
+cargo run -- init --godot /path/to/godot
 cargo run -- check /path/to/project
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
 ```
 
-## Pinned Godot
+## Project engine
 
-Godot 4.7.2 is pinned in `godot.lock.json` for engine-backed validation. On Windows,
+Run `gdkit init --godot <editor-executable>` from the directory containing
+`project.godot`. It validates the project directory and probes the engine before
+creating `gdkit.toml`. Existing configuration is never overwritten. For a monorepo
+with sibling `game` and `engine` directories, the committed config can look like:
+
+```toml
+[engine]
+executable = "../engine/bin/windows-x86_64/godot.windows.editor.x86_64.console.exe"
+```
+
+Paths in this file resolve relative to the file, regardless of the shell's current
+directory. Initialization writes a relative path when possible, or an absolute
+path when the engine is on another Windows drive. Edit `engine.executable` to
+change the association.
+
+Engine selection uses `--godot`, then `GDKIT_GODOT`, then the project's config.
+Explicit and environment paths resolve relative to the current directory. There
+is no bundled-engine or PATH fallback; a missing or invalid selection is an error.
+`init` also accepts `GDKIT_GODOT` when `--godot` is omitted.
+
+Both commands probe the selected executable in an isolated temporary project.
+They require Godot 4 editor command-line support, working GDScript and resource
+APIs, and acceptance of the checker harness. Exact versions and release suffixes
+are not restricted, so compatible custom builds and engine updates are accepted.
+The selected executable and reported version are printed to stderr. Compatibility
+has been tested with official 4.7.2 and a custom 4.7.3 RC build; the probe permits
+other Godot 4 editors without claiming that every release has been tested.
+
+`check` runs the selected editor headlessly, imports the project, and loads every
+GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
+Importing can update the project's Godot caches. It exits 1 when Godot reports an
+error or a resource fails to load, and exits 2 for tooling failures such as a
+missing project, invalid configuration, or incompatible engine. This checks
+resource loading, not gameplay execution or a complete C# build.
+
+Engine selection does not change the syntax supported by the gdview formatter.
+
+## Test engine
+
+Godot 4.7.2 is pinned in `godot.lock.json` only as a reproducible test dependency.
+Normal `init` and `check` operation never reads this lock. On Windows,
 provision the official editor into the repository-local `.tools` directory with:
 
 ```powershell
@@ -32,11 +73,13 @@ The provisioner verifies the archive checksum and engine version, enables Godot'
 self-contained mode, and prints the path to the console executable. Re-running it
 reuses an installation that still matches the lock.
 
-`check` runs the pinned editor headlessly, imports the project, and loads every
-GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
-It exits 1 when Godot reports an error or a resource fails to load, and exits 2 for
-tooling failures such as a missing project or engine. `--godot` or `GDKIT_GODOT`
-can select a compatible custom executable.
+Run the engine association and checker integration fixtures against any selected
+editor with:
+
+```powershell
+$env:GDKIT_TEST_GODOT = 'P:/path/to/godot.console.exe'
+cargo test --test check -- --include-ignored
+```
 
 `scene-tree` reads a Godot text scene and prints its literal node hierarchy without
 loading the project or running Godot. Native types, attached scripts, scene

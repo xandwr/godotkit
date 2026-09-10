@@ -13,26 +13,7 @@ use serde::Deserialize;
 use crate::cli::CheckArgs;
 
 const HARNESS: &str = include_str!("check.gd");
-const LOCK: &str = include_str!("../godot.lock.json");
 const RESULT_PREFIX: &str = "GDKIT_CHECK_RESULT:";
-
-#[derive(Deserialize)]
-struct Lock {
-    version: String,
-    artifacts: Artifacts,
-}
-
-#[derive(Deserialize)]
-struct Artifacts {
-    #[serde(rename = "windows-x86_64")]
-    windows_x86_64: Artifact,
-}
-
-#[derive(Deserialize)]
-struct Artifact {
-    executable: String,
-    version_prefix: String,
-}
 
 #[derive(Deserialize)]
 struct HarnessResult {
@@ -76,80 +57,6 @@ impl Drop for TemporaryScript {
     }
 }
 
-fn pinned_artifact(lock: &Lock) -> Result<&Artifact, Box<dyn Error>> {
-    if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        return Err("the pinned Godot artifact only supports Windows x86_64".into());
-    }
-    Ok(&lock.artifacts.windows_x86_64)
-}
-
-fn find_lock_root(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .find(|path| path.join("godot.lock.json").is_file())
-        .map(Path::to_path_buf)
-}
-
-fn resolve_engine(explicit: Option<&Path>, lock: &Lock) -> Result<PathBuf, Box<dyn Error>> {
-    let artifact = pinned_artifact(lock)?;
-    let mut candidates = Vec::new();
-    if let Some(path) = explicit {
-        if !path.is_file() {
-            return Err(format!("Godot executable not found: {}", path.display()).into());
-        }
-        candidates.push(path.to_path_buf());
-    } else if let Some(path) = env::var_os("GDKIT_GODOT") {
-        let path = PathBuf::from(path);
-        if !path.is_file() {
-            return Err(format!("Godot executable not found: {}", path.display()).into());
-        }
-        candidates.push(path);
-    } else {
-        if let Ok(executable) = env::current_exe()
-            && let Some(directory) = executable.parent()
-        {
-            candidates.push(directory.join("runtime/godot").join(&artifact.executable));
-            candidates.push(directory.join(&artifact.executable));
-        }
-        if let Ok(current) = env::current_dir()
-            && let Some(root) = find_lock_root(&current)
-        {
-            candidates.push(
-                root.join(".tools/godot")
-                    .join(&lock.version)
-                    .join("windows-x86_64")
-                    .join(&artifact.executable),
-            );
-        }
-        candidates.push(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(".tools/godot")
-                .join(&lock.version)
-                .join("windows-x86_64")
-                .join(&artifact.executable),
-        );
-    }
-
-    let path = candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or("pinned Godot is not provisioned; run scripts/provision-godot.ps1")?;
-    let version = Command::new(&path).arg("--version").output()?;
-    if !version.status.success() {
-        return Err(format!("failed to run Godot at {}", path.display()).into());
-    }
-    let actual = String::from_utf8_lossy(&version.stdout);
-    if !actual.starts_with(&artifact.version_prefix) {
-        return Err(format!(
-            "Godot version mismatch: expected {}, got {}",
-            artifact.version_prefix,
-            actual.trim()
-        )
-        .into());
-    }
-    Ok(path)
-}
-
 fn engine_output(engine: &Path, project: &Path, args: &[&OsStr]) -> io::Result<Output> {
     Command::new(engine)
         .args([OsStr::new("--headless"), OsStr::new("--no-header")])
@@ -159,7 +66,7 @@ fn engine_output(engine: &Path, project: &Path, args: &[&OsStr]) -> io::Result<O
         .output()
 }
 
-fn has_errors(output: &Output) -> bool {
+pub(crate) fn has_errors(output: &Output) -> bool {
     [output.stdout.as_slice(), output.stderr.as_slice()]
         .into_iter()
         .any(|bytes| {
@@ -192,16 +99,10 @@ fn harness_result(output: &Output) -> Result<HarnessResult, Box<dyn Error>> {
 }
 
 pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
-    let project = fs::canonicalize(&args.project)?;
-    if !project.join("project.godot").is_file() {
-        return Err(format!(
-            "{} is not a Godot project root: project.godot is missing",
-            project.display()
-        )
-        .into());
-    }
-    let lock: Lock = serde_json::from_str(LOCK)?;
-    let engine = resolve_engine(args.godot.as_deref(), &lock)?;
+    let project = crate::engine::project_root(&args.project)?;
+    let engine = crate::engine::resolve(&project, args.godot.as_deref())?;
+    let version = crate::engine::probe(&engine)?;
+    eprintln!("engine: {} ({version})", engine.display());
 
     let import = engine_output(
         &engine,

@@ -1,5 +1,6 @@
 mod check;
 mod cli;
+mod engine;
 
 use std::{
     error::Error,
@@ -157,6 +158,7 @@ fn main() -> ExitCode {
         };
     }
     let result = match Cli::parse().command {
+        Command::Init(args) => engine::init(args),
         Command::Check(args) => check::run(args),
         Command::Format(args) => format(args),
         Command::FormatProject(args) => format_project(args),

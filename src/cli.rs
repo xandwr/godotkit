@@ -11,7 +11,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    #[command(about = "Check a Godot project with the pinned engine")]
+    #[command(about = "Associate the current Godot project with an engine")]
+    Init(InitArgs),
+    #[command(about = "Check a Godot project with its configured engine")]
     Check(CheckArgs),
     #[command(about = "Format a GDScript source file")]
     Format(FormatArgs),
@@ -19,6 +21,16 @@ pub enum Command {
     FormatProject(FormatProjectArgs),
     #[command(about = "Print a compact tree for a Godot text scene")]
     SceneTree(SceneTreeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Godot editor executable to associate"
+    )]
+    pub godot: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
