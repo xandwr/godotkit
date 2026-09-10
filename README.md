@@ -13,6 +13,7 @@ cargo run -- format-project --check
 cargo run -- scene-tree scene.tscn
 cargo run -- scene-tree scene.tscn --expand
 cargo run -- scene-tree scene.tscn --expand-depth 2
+cargo run -- check /path/to/project
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
@@ -30,6 +31,12 @@ pwsh -File scripts/provision-godot.ps1
 The provisioner verifies the archive checksum and engine version, enables Godot's
 self-contained mode, and prints the path to the console executable. Re-running it
 reuses an installation that still matches the lock.
+
+`check` runs the pinned editor headlessly, imports the project, and loads every
+GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
+It exits 1 when Godot reports an error or a resource fails to load, and exits 2 for
+tooling failures such as a missing project or engine. `--godot` or `GDKIT_GODOT`
+can select a compatible custom executable.
 
 `scene-tree` reads a Godot text scene and prints its literal node hierarchy without
 loading the project or running Godot. Native types, attached scripts, scene

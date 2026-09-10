@@ -11,12 +11,22 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = "Check a Godot project with the pinned engine")]
+    Check(CheckArgs),
     #[command(about = "Format a GDScript source file")]
     Format(FormatArgs),
     #[command(about = "Format every GDScript file in the current Godot project")]
     FormatProject(FormatProjectArgs),
     #[command(about = "Print a compact tree for a Godot text scene")]
     SceneTree(SceneTreeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CheckArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

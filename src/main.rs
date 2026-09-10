@@ -1,3 +1,4 @@
+mod check;
 mod cli;
 
 use std::{
@@ -156,6 +157,7 @@ fn main() -> ExitCode {
         };
     }
     let result = match Cli::parse().command {
+        Command::Check(args) => check::run(args),
         Command::Format(args) => format(args),
         Command::FormatProject(args) => format_project(args),
         Command::SceneTree(args) => scene_tree(args),
