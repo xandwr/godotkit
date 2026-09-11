@@ -287,7 +287,7 @@ func collect_observation() -> Dictionary:
 	var spawners: Array[Dictionary] = []
 	var synchronizers: Array[Dictionary] = []
 	var nodes: Array[Node] = []
-	collect_nodes(root, nodes)
+	var truncated := collect_nodes(root, nodes)
 	var root_apis := {}
 	for node in nodes:
 		var api := node.get_multiplayer()
@@ -295,12 +295,11 @@ func collect_observation() -> Dictionary:
 		var parent := node.get_parent()
 		if parent == null or parent.get_multiplayer().get_instance_id() != api_id:
 			root_apis[node.get_path()] = api
-		if authorities.size() < MAX_NODES:
-			authorities.append({
-				"path": str(node.get_path()),
-				"authority": node.get_multiplayer_authority(),
-				"local_authority": node.is_multiplayer_authority(),
-			})
+		authorities.append({
+			"path": str(node.get_path()),
+			"authority": node.get_multiplayer_authority(),
+			"local_authority": node.is_multiplayer_authority(),
+		})
 		if node is MultiplayerSpawner:
 			spawners.append(spawner_state(node))
 		elif node is MultiplayerSynchronizer:
@@ -316,14 +315,18 @@ func collect_observation() -> Dictionary:
 		"spawners": spawners,
 		"synchronizers": synchronizers,
 		"recent_events": events.duplicate(true),
-		"truncated": nodes.size() > authorities.size(),
+		"truncated": truncated,
 	}
 
 
-func collect_nodes(node: Node, nodes: Array[Node]) -> void:
+func collect_nodes(node: Node, nodes: Array[Node]) -> bool:
+	if nodes.size() >= MAX_NODES:
+		return true
 	nodes.append(node)
 	for child in node.get_children(true):
-		collect_nodes(child, nodes)
+		if collect_nodes(child, nodes):
+			return true
+	return false
 
 
 func multiplayer_state(path: String, api: MultiplayerAPI) -> Dictionary:
