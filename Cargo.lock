@@ -164,7 +164,7 @@ dependencies = [
 [[package]]
 name = "gdview"
 version = "0.1.0"
-source = "git+https://github.com/xandwr/gdview?rev=8899766f62e38fcc24466da07a17324cd2642bf4#8899766f62e38fcc24466da07a17324cd2642bf4"
+source = "git+https://github.com/xandwr/gdview?rev=49df9290891f9bbf5708eabbc59f56dfc1cf263d#49df9290891f9bbf5708eabbc59f56dfc1cf263d"
 dependencies = [
  "ignore",
  "thiserror",

@@ -124,6 +124,10 @@ origin scene. Expansion depths are capped at 64, cycles are rejected, and
 `res://` paths are resolved from the nearest ancestor containing `project.godot`.
 Expansion reports invalid project markers and project-discovery I/O failures;
 relative scene references still work without an enclosing project.
+Resource paths and optional enclosing-project discovery use gdview's shared APIs.
+UID-only references cannot be resolved without a UID registry; runtime-specific
+schemes such as `user://` are rejected. Engine commands retain explicit-root
+validation rather than searching parent directories.
 
 Use `--connections` to show outgoing signal connections beneath each source node,
 and `--groups` to show saved group memberships. Both switches can be combined

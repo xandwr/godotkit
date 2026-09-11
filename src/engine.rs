@@ -39,14 +39,16 @@ impl Drop for ProbeDirectory {
 
 pub fn project_root(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let root = fs::canonicalize(path)?;
-    if !root.join("project.godot").is_file() {
-        return Err(format!(
+    let project = gdview::Project::open(&root).map_err(|error| -> Box<dyn Error> {
+        match error {
+            gdview::ProjectError::NotFound { .. } | gdview::ProjectError::ConfigNotAFile { .. } => format!(
             "no project.godot in {}\nRun from the directory containing project.godot, or use gdkit check <project-directory> (for example: gdkit check game).",
             display_path(&root)
-        ).into());
-    }
-    gdview::Project::open(&root)?;
-    fs::read_to_string(root.join("project.godot"))?;
+            ).into(),
+            error => Box::new(error),
+        }
+    })?;
+    fs::read_to_string(project.config_path())?;
     Ok(root)
 }
 
