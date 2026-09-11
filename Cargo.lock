@@ -155,7 +155,6 @@ dependencies = [
  "anstream",
  "clap",
  "gdview",
- "ignore",
  "pathdiff",
  "serde",
  "serde_json",
@@ -165,8 +164,9 @@ dependencies = [
 [[package]]
 name = "gdview"
 version = "0.1.0"
-source = "git+https://github.com/xandwr/gdview?rev=da0853ca53a3388ac1e5caebe72f893d8c21f790#da0853ca53a3388ac1e5caebe72f893d8c21f790"
+source = "git+https://github.com/xandwr/gdview?rev=8899766f62e38fcc24466da07a17324cd2642bf4#8899766f62e38fcc24466da07a17324cd2642bf4"
 dependencies = [
+ "ignore",
  "thiserror",
  "unicode-ident",
 ]

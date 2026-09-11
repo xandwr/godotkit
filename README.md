@@ -72,8 +72,9 @@ the default display; project source locations remain visible. Use `gdkit check
 
 Engine selection does not change the syntax supported by the gdview formatter.
 
-`format-project` and the resource-loading phase of `check` share Git-aware file
-discovery. Parent `.gitignore` files (including monorepo roots), nested ignore
+`format-project` and the resource-loading phase of `check` use gdview's shared
+file enumeration with gdkit's Git-aware filtering policy. Extensions are matched
+case-insensitively. Parent `.gitignore` files (including monorepo roots), nested ignore
 files, `!` exceptions, `.git/info/exclude`, and global Git ignore rules are
 respected. `.gitignore` rules also work without an initialized Git repository.
 Matching is path-based, including for tracked files; gdkit does not consult the
@@ -218,9 +219,9 @@ parser, and arena tree. Declarative macros generate token metadata, operator
 classification, typed node wrappers, and the `ast::Expression` enum. Expression
 wrapping uses forward links instead of inserting into an event vector. Tree
 traversal and destruction do not recurse through nested nodes. Project formatting
-also uses gdview to validate the current project root. File discovery, formatting
-rules, and file writes remain in gdkit, with shared Git-aware traversal for the
-project commands.
+also uses gdview to validate the current project root and enumerate files.
+Formatting rules, file-discovery policy, and file writes remain in gdkit;
+gdview owns traversal for both project commands.
 
 Coverage includes declarations, abstract signatures, typed variadic parameters,
 property accessors, nested classes, annotations, match patterns and guards,
