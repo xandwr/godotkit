@@ -57,6 +57,21 @@ pub struct CacheArgs {
 pub enum CacheCommand {
     #[command(about = "Rescan files and update UID, script-class, and import caches")]
     Refresh(CacheProjectArgs),
+    #[command(about = "Discard derived project indexes and regenerate them with Godot")]
+    Rebuild(CacheProjectArgs),
+    #[command(about = "Remove derived indexes, imported assets, and shader caches")]
+    Clean(CacheCleanArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CacheCleanArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(
+        long,
+        help = "List deletion targets without stopping the worker or removing files"
+    )]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]

@@ -75,4 +75,101 @@ fn refresh_persists_uid_mapping_after_move() {
         "{}",
         String::from_utf8_lossy(&verified.stderr)
     );
+    fs::write(project.0.join(".godot/uid_cache.bin"), b"broken").unwrap();
+    let rebuilt = project.run(&[
+        "cache",
+        "rebuild",
+        "--godot",
+        &std::env::var("GDKIT_TEST_GODOT").unwrap(),
+    ]);
+    assert!(
+        rebuilt.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("moved.gd.uid")).unwrap(),
+        uid
+    );
+    let verified = Command::new(std::env::var("GDKIT_TEST_GODOT").unwrap())
+        .args(["--headless", "--path"])
+        .arg(&project.0)
+        .args(["--script", "res://verify.gd"])
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}
+
+#[test]
+fn clean_preserves_source_metadata_editor_state_and_gdkit_records() {
+    let project = Project::new("clean");
+    let removed = [
+        ".godot/uid_cache.bin",
+        ".godot/global_script_class_cache.cfg",
+        ".godot/editor/filesystem_cache10",
+        ".godot/editor/filesystem_update4",
+        ".godot/imported/texture.ctex",
+        ".godot/shader_cache/shader.bin",
+    ];
+    let preserved = [
+        "actor.gd.uid",
+        "texture.png.import",
+        ".godot/editor/editor_layout.cfg",
+        ".godot/editor/filesystem_cache_notes",
+        ".godot/gdkit/api-index.json",
+        ".godot/gdkit/checks/report.json",
+    ];
+    for name in removed.iter().chain(preserved.iter()) {
+        let path = project.0.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "retained content").unwrap();
+    }
+    let preview = project.run(&["cache", "clean", "--dry-run"]);
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert!(removed.iter().all(|name| project.0.join(name).exists()));
+    let clean = project.run(&["cache", "clean"]);
+    assert!(
+        clean.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert!(removed.iter().all(|name| !project.0.join(name).exists()));
+    for name in preserved {
+        assert_eq!(
+            fs::read_to_string(project.0.join(name)).unwrap(),
+            "retained content"
+        );
+    }
+    assert!(project.run(&["cache", "clean"]).status.success());
+}
+
+#[cfg(windows)]
+#[test]
+fn clean_rejects_junctions_without_touching_the_target() {
+    let project = Project::new("junction");
+    let outside = Project::new("outside");
+    fs::write(outside.0.join("sentinel"), "keep").unwrap();
+    let junction = project.0.join(".godot");
+    let result = Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&outside.0)
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    let result = project.run(&["cache", "clean"]);
+    fs::remove_dir(&junction).unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert_eq!(
+        fs::read_to_string(outside.0.join("sentinel")).unwrap(),
+        "keep"
+    );
 }

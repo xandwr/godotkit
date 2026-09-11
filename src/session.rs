@@ -136,7 +136,7 @@ fn records_root(project: &Path) -> PathBuf {
     root(project).join("records")
 }
 
-fn read_records(project: &Path) -> Result<Vec<SessionRecord>, Box<dyn Error>> {
+pub(crate) fn read_records(project: &Path) -> Result<Vec<SessionRecord>, Box<dyn Error>> {
     let directory = records_root(project);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,

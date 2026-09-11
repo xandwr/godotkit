@@ -811,6 +811,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let _total = PhaseTimer::new("total", args.timings);
     if args.stop_worker {
         let project = crate::engine::project_root(&args.project)?;
+        let _cache_lock = crate::cache::lock(&project)?;
         crate::import_worker::stop_project(&project)?;
         println!("import worker stopped");
         return Ok(ExitCode::SUCCESS);
@@ -845,6 +846,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         }
     };
     report.project.root = project.clone();
+    let _cache_lock = crate::cache::lock(&project)?;
     let artifacts = match CheckArtifacts::create(&project) {
         Ok(artifacts) => artifacts,
         Err(error) => {

@@ -141,6 +141,21 @@ Exit codes are 0 for a successful import, 1 for engine/import errors, and 2 for
 setup failures. Refresh reports raw engine diagnostics, including errors that
 `check.ignore_import_errors` would suppress during validation.
 
+Use `gdkit cache rebuild [PROJECT]` when indexes are stale or corrupt. It removes
+the UID, global script-class, scene-group, and editor filesystem indexes, then
+imports with the configured engine. Imported assets and shaders remain available.
+Use `gdkit cache clean [PROJECT] --dry-run` to preview a broader cleanup;
+`gdkit cache clean [PROJECT]` also removes `.godot/imported` and
+`.godot/shader_cache`, without importing afterward. Clean needs no engine.
+Both operations preserve source `.uid` and `.import` sidecars, editor layouts,
+and `.godot/gdkit` records, logs, and API/engine-probe caches. Every removed target
+is printed. Deleted derived caches can be regenerated with `gdkit cache refresh`.
+Close external editors before rebuilding or cleaning. Running gdkit sessions
+block these operations; gdkit's import worker is stopped automatically.
+Cache mutations and checks share a project lock outside `.godot`. Cleanup
+rejects cache symlinks and Windows reparse points instead of following them.
+`check --fresh` still means fresh processes; it does not delete existing caches.
+
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
 Importing can update the project's Godot caches. It exits 1 when Godot reports an
