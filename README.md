@@ -188,6 +188,10 @@ fail the check. Use `.gdignore` for directories Godot itself should exclude.
 
 ## Test engine
 
+The [poweruser roadmap](docs/poweruser-roadmap.md) documents the researched
+direction for diagnostics, runtime sessions, API queries, scene intelligence,
+and repeatable multiplayer scenarios. Proposed commands there are not yet APIs.
+
 Godot 4.7.2 is pinned in `godot.lock.json` only as a reproducible test dependency.
 Normal `init` and `check` operation never reads this lock. On Windows,
 provision the official editor into the repository-local `.tools` directory with:
