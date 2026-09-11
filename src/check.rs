@@ -491,6 +491,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zero_exit_script_errors_fail_on_either_stream() {
+        for stdout in [false, true] {
+            let message = b"  SCRIPT ERROR: Invalid call. Nonexistent function 'push_tornado' in base 'RichTextLabel'.\n   at: _ready (res://lobby.gd:4)\n".to_vec();
+            let output = Output {
+                status: Default::default(),
+                stdout: if stdout { message.clone() } else { Vec::new() },
+                stderr: if stdout { Vec::new() } else { message },
+            };
+            assert!(output.status.success());
+            assert!(has_errors(&output));
+            assert!(
+                diagnostics(&output)
+                    .issues
+                    .iter()
+                    .any(|line| line.contains("res://lobby.gd:4"))
+            );
+        }
+    }
+
+    #[test]
     fn import_exceptions_require_message_and_own_source_frame() {
         let rules = vec![crate::engine::ImportError {
             message: "ERROR: Known plugin problem".into(),
