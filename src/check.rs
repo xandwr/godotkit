@@ -408,13 +408,29 @@ fn print_summary(failed: bool, counts: Option<&Counts>) -> io::Result<()> {
 
 pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let _total = PhaseTimer::new("total", args.timings);
-    let scan_timer = PhaseTimer::new("file scan", args.timings);
     let project = crate::engine::project_root(&args.project)?;
     if args.stop_worker {
         crate::import_worker::stop_project(&project)?;
         println!("import worker stopped");
         return Ok(ExitCode::SUCCESS);
     }
+    let persistent_import = !args.fresh;
+    let result = run_project(args, &project);
+    let failed = match &result {
+        Ok(code) => *code != ExitCode::SUCCESS,
+        Err(_) => true,
+    };
+    if failed
+        && persistent_import
+        && let Err(error) = crate::import_worker::stop_project(&project)
+    {
+        eprintln!("warning: failed to stop import worker after check failure: {error}");
+    }
+    result
+}
+
+fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Error>> {
+    let scan_timer = PhaseTimer::new("file scan", args.timings);
     let scenes = args
         .scene
         .iter()
@@ -422,7 +438,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
             let path = project.join(scene.strip_prefix("res://").unwrap_or(scene));
             let path = fs::canonicalize(&path)
                 .map_err(|error| format!("smoke scene {}: {error}", path.display()))?;
-            if !path.starts_with(fs::canonicalize(&project)?)
+            if !path.starts_with(fs::canonicalize(project)?)
                 || !path.is_file()
                 || !path
                     .extension()
@@ -433,7 +449,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
             Ok(path)
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-    let config = crate::engine::read_config(&project)?;
+    let config = crate::engine::read_config(project)?;
     let strict_methods = args.strict_methods
         || config
             .as_ref()
@@ -442,13 +458,13 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         config.check.ignore_import_errors.as_slice()
     });
     let paths =
-        crate::project_files::collect(&project, &["gd", "tscn", "scn", "tres", "res", "gdshader"])?;
+        crate::project_files::collect(project, &["gd", "tscn", "scn", "tres", "res", "gdshader"])?;
     let paths = paths
         .iter()
         .map(|path| {
             Ok(format!(
                 "res://{}",
-                path.strip_prefix(&project)?
+                path.strip_prefix(project)?
                     .to_str()
                     .ok_or("resource path is not valid UTF-8")?
                     .replace('\\', "/")
@@ -458,8 +474,8 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let manifest = TemporaryScript::create(&serde_json::to_vec(&paths)?, "json")?;
     drop(scan_timer);
     let mut validation_timer = PhaseTimer::new("engine validation (probe)", args.timings);
-    let engine = crate::engine::resolve(&project, args.godot.as_deref())?;
-    let (version, cached) = crate::engine::validated_version(&engine, &project)?;
+    let engine = crate::engine::resolve(project, args.godot.as_deref())?;
+    let (version, cached) = crate::engine::validated_version(&engine, project)?;
     if cached {
         validation_timer.name = "engine validation (cached)";
     }
@@ -471,14 +487,14 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
 
     let mut import_timer = PhaseTimer::new("import", args.timings);
     let import = if args.fresh {
-        crate::import_worker::stop_project(&project)?;
+        crate::import_worker::stop_project(project)?;
         engine_output(
             &engine,
-            &project,
+            project,
             &[OsStr::new("--import"), OsStr::new("--quiet")],
         )?
     } else {
-        match crate::import_worker::import(&project, &engine) {
+        match crate::import_worker::import(project, &engine) {
             Ok((output, reused)) => {
                 import_timer.name = if reused {
                     "import (warm worker)"
@@ -488,11 +504,11 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
                 output
             }
             Err(error) => {
-                crate::import_worker::stop_project(&project)?;
+                crate::import_worker::stop_project(project)?;
                 eprintln!("warning: {error}; falling back to a fresh import");
                 engine_output(
                     &engine,
-                    &project,
+                    project,
                     &[OsStr::new("--import"), OsStr::new("--quiet")],
                 )?
             }
@@ -513,7 +529,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
             &filtered_import
         },
         "Import",
-        &project,
+        project,
         &paths,
         args.verbose,
     )?;
@@ -522,7 +538,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let loading_timer = PhaseTimer::new("resource loading", args.timings);
     let check = engine_output(
         &engine,
-        &project,
+        project,
         &[
             OsStr::new("--script"),
             harness.0.as_os_str(),
@@ -537,7 +553,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     )?;
     drop(loading_timer);
     let check_failed = !check.status.success() || has_errors(&check);
-    write_diagnostics(&check, "Resource loading", &project, &paths, args.verbose)?;
+    write_diagnostics(&check, "Resource loading", project, &paths, args.verbose)?;
     let result = match harness_result(&check) {
         Ok(result) => result,
         Err(error) if check_failed => {
@@ -563,7 +579,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
                 args.smoke_frames,
                 args.smoke_timeout,
             )?;
-            write_diagnostics(&output, &phase, &project, &paths, args.verbose)?;
+            write_diagnostics(&output, &phase, project, &paths, args.verbose)?;
             if timed_out {
                 eprintln!("error: {phase} exceeded {} seconds", args.smoke_timeout);
             }

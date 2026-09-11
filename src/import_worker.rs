@@ -322,23 +322,36 @@ fn spawn_detached(command: &mut Command) -> std::io::Result<std::process::Child>
 }
 
 fn stop(worker: &Worker) -> Result<(), Box<dyn Error>> {
-    if request(worker, &[], true).is_err() {
-        return Ok(());
-    }
+    let graceful = request(worker, &[], true).is_ok();
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::{
             Foundation::{CloseHandle, WAIT_TIMEOUT},
-            System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+            System::Threading::{
+                OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+                WaitForSingleObject,
+            },
         };
-        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, worker.pid);
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, worker.pid);
         if !handle.is_null() {
-            let result = WaitForSingleObject(handle, 5000);
+            let mut result = WaitForSingleObject(handle, if graceful { 5000 } else { 0 });
+            if result == WAIT_TIMEOUT {
+                if TerminateProcess(handle, 1) == 0 {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(handle);
+                    return Err(error.into());
+                }
+                result = WaitForSingleObject(handle, 5000);
+            }
             CloseHandle(handle);
             if result == WAIT_TIMEOUT {
-                return Err("previous import worker is still shutting down".into());
+                return Err("import worker did not terminate".into());
             }
         }
+    }
+    #[cfg(not(windows))]
+    if !graceful {
+        return Ok(());
     }
     Ok(())
 }

@@ -39,6 +39,7 @@ impl Project {
         let diagnostics = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "{diagnostics}");
         assert!(diagnostics.contains(expected), "{diagnostics}");
+        assert!(!self.0.join(".godot/gdkit/import-worker.json").exists());
     }
 }
 
