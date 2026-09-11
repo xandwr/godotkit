@@ -27,8 +27,8 @@ baseline context and do not count toward new milestone completion.
 
 ## Dashboard
 
-**Recorded delivery: 0/12 milestones complete.** No active milestone recorded.
-Suggested next milestone: M01. No owner, target dates, or blockers recorded yet.
+**Recorded delivery: 0/12 milestones complete.** M01 is in progress. No target
+dates or blockers recorded yet.
 
 Dependencies below are a working execution plan derived from the roadmap. They
 can be revised with a recorded reason. Delivery order follows the roadmap;
@@ -36,7 +36,7 @@ independent design work can proceed before prerequisite implementations finish.
 
 | Order | Milestone | Priority | Status | Prerequisites | Finish line |
 | --- | --- | --- | --- | --- | --- |
-| 1 | [M01 Reports and diagnostics](#m01-reports-and-diagnostics) | P0 | Planned | Baseline | Stable structured outcomes and raw logs |
+| 1 | [M01 Reports and diagnostics](#m01-reports-and-diagnostics) | P0 | In progress | Baseline | Stable structured outcomes and raw logs |
 | 2 | [M02 Process supervisor](#m02-process-supervisor) | P0 | Planned | M01 contract | Bounded operations, cancellation, owned-process cleanup |
 | 3 | [M03 Doctor](#m03-doctor) | P1 | Planned | M01, M02 | Explain selected engine, capabilities, and worker health |
 | 4 | [M04 Native API lookup](#m04-native-api-lookup) | P1 | Planned | M02, M03 identity/capabilities | Correct inherited signatures on official/custom engines |
@@ -75,12 +75,13 @@ These are existing starting points, not newly completed tasks. See the roadmap's
 
 [Roadmap section 1](poweruser-roadmap.md#1-a-result-contract-that-can-be-trusted).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-10 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: M01.01-M01.02 report schema and
+serialization tests in `src/report.rs`.
 
-- [ ] M01.01 Define versioned `CheckReport`: engine fingerprint, project snapshot,
+- [x] M01.01 Define versioned `CheckReport`: engine fingerprint, project snapshot,
   check policy, requested/completed/skipped phases, failures, artifact locations.
-- [ ] M01.02 Define diagnostic severity, optional engine code, message, resource,
+- [x] M01.02 Define diagnostic severity, optional engine code, message, resource,
   optional line/column, stack frames, process/session identity, timestamp, count.
 - [ ] M01.03 Preserve original stdout/stderr artifacts and ordered diagnostic events;
   display consolidation retains occurrence counts.
@@ -449,4 +450,5 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-10 | M01.01-M01.02 | Added the versioned report and diagnostic data contract with stable JSON names and round-trip coverage | `src/report.rs`; next integrate ordered capture and raw artifacts |
 | 2026-09-10 | Tracker | Established 12 planned milestones, acceptance checks, and two decision gates from the roadmap; no new delivery claimed | Begin M01 and record implementation evidence |
