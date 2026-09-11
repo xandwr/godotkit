@@ -1,17 +1,19 @@
 use std::{
+    collections::HashSet,
     env,
     error::Error,
     ffi::OsStr,
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    process::{Command, ExitCode, Output, Stdio},
+    process::{Command, ExitCode, Output},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
 
 use crate::cli::CheckArgs;
+use crate::process::{CapturedOutput, OutputStream};
 
 const HARNESS: &str = include_str!("check.gd");
 const RESULT_PREFIX: &str = "GDKIT_CHECK_RESULT:";
@@ -116,26 +118,45 @@ impl CheckArtifacts {
         ))
     }
 
-    fn preserve(&self, phase: &str, output: &Output) -> io::Result<()> {
+    fn preserve(&self, phase: &str, output: &CapturedOutput) -> io::Result<()> {
         fs::write(
             self.directory.join(format!("{phase}.stdout.log")),
-            &output.stdout,
+            &output.output.stdout,
         )?;
         fs::write(
             self.directory.join(format!("{phase}.stderr.log")),
-            &output.stderr,
+            &output.output.stderr,
         )?;
+        let mut events = Vec::new();
+        for (sequence, line) in output.lines.iter().enumerate() {
+            serde_json::to_writer(
+                &mut events,
+                &serde_json::json!({
+                    "sequence": sequence,
+                    "stream": match line.stream {
+                        OutputStream::Stdout => "stdout",
+                        OutputStream::Stderr => "stderr",
+                    },
+                    "observed_at_unix_ms": line.observed_at_unix_ms,
+                    "text": String::from_utf8_lossy(&line.bytes)
+                        .trim_end_matches(['\r', '\n']),
+                }),
+            )?;
+            events.push(b'\n');
+        }
+        fs::write(self.directory.join(format!("{phase}.events.jsonl")), events)?;
         Ok(())
     }
 }
 
-fn engine_output(engine: &Path, project: &Path, args: &[&OsStr]) -> io::Result<Output> {
-    Command::new(engine)
+fn engine_output(engine: &Path, project: &Path, args: &[&OsStr]) -> io::Result<CapturedOutput> {
+    let mut command = Command::new(engine);
+    command
         .args([OsStr::new("--headless"), OsStr::new("--no-header")])
         .arg("--path")
         .arg(project)
-        .args(args)
-        .output()
+        .args(args);
+    crate::process::run(&mut command, None)
 }
 
 fn smoke_output(
@@ -144,45 +165,15 @@ fn smoke_output(
     scene: &Path,
     frames: u32,
     timeout: u64,
-) -> io::Result<(Output, bool)> {
-    let stdout = TemporaryScript::create(&[], "stdout")?;
-    let stderr = TemporaryScript::create(&[], "stderr")?;
-    let mut child = Command::new(engine)
+) -> io::Result<CapturedOutput> {
+    let mut command = Command::new(engine);
+    command
         .args(["--headless", "--no-header", "--path"])
         .arg(project)
         .arg(scene)
         .arg("--quit-after")
-        .arg(frames.to_string())
-        .stdout(Stdio::from(OpenOptions::new().write(true).open(&stdout.0)?))
-        .stderr(Stdio::from(OpenOptions::new().write(true).open(&stderr.0)?))
-        .spawn()?;
-    let start = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() >= Duration::from_secs(timeout) {
-            timed_out = true;
-            #[cfg(windows)]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                    .output();
-            }
-            let _ = child.kill();
-            break child.wait()?;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    Ok((
-        Output {
-            status,
-            stdout: fs::read(&stdout.0)?,
-            stderr: fs::read(&stderr.0)?,
-        },
-        timed_out,
-    ))
+        .arg(frames.to_string());
+    crate::process::run(&mut command, Some(Duration::from_secs(timeout)))
 }
 
 pub(crate) fn has_errors(output: &Output) -> bool {
@@ -196,20 +187,35 @@ pub(crate) fn has_errors(output: &Output) -> bool {
         })
 }
 
-fn filter_import_errors(output: &Output, rules: &[crate::engine::ImportError]) -> (Output, usize) {
+fn filter_import_errors(
+    output: &CapturedOutput,
+    rules: &[crate::engine::ImportError],
+) -> (CapturedOutput, usize) {
     let mut ignored = 0;
-    let mut filter = |bytes: &[u8]| {
-        let text = String::from_utf8_lossy(bytes);
-        let lines: Vec<_> = text.lines().collect();
-        let mut kept = String::new();
+    let mut excluded = HashSet::new();
+    for stream in [OutputStream::Stdout, OutputStream::Stderr] {
+        let lines: Vec<_> = output
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.stream == stream)
+            .map(|(global_index, line)| {
+                (
+                    global_index,
+                    String::from_utf8_lossy(&line.bytes)
+                        .trim_end_matches(['\r', '\n'])
+                        .to_owned(),
+                )
+            })
+            .collect();
         let mut index = 0;
         while index < lines.len() {
             let start = index;
             index += 1;
-            let message = lines[start].trim();
+            let message = lines[start].1.trim();
             if message.starts_with("ERROR:") || message.starts_with("SCRIPT ERROR:") {
                 while index < lines.len() {
-                    let line = lines[index].trim();
+                    let line = lines[index].1.trim();
                     let frame = line
                         .strip_prefix('[')
                         .and_then(|line| line.split_once(']'))
@@ -227,30 +233,24 @@ fn filter_import_errors(output: &Output, rules: &[crate::engine::ImportError]) -
                 }
                 if rules.iter().any(|rule| {
                     message == rule.message
-                        && lines[start + 1..index].iter().any(|line| {
+                        && lines[start + 1..index].iter().any(|(_, line)| {
                             line.contains(&format!("({}:", rule.source))
                                 || line.contains(&format!("({})", rule.source))
                         })
                 }) {
                     ignored += 1;
+                    excluded.extend(
+                        lines[start..index]
+                            .iter()
+                            .map(|(global_index, _)| *global_index),
+                    );
                     continue;
                 }
             }
-            for line in &lines[start..index] {
-                kept.push_str(line);
-                kept.push('\n');
-            }
         }
-        kept.into_bytes()
-    };
-    let stdout = filter(&output.stdout);
-    let stderr = filter(&output.stderr);
+    }
     (
-        Output {
-            status: output.status,
-            stdout,
-            stderr,
-        },
+        output.retaining_lines(|index| !excluded.contains(&index)),
         ignored,
     )
 }
@@ -266,36 +266,35 @@ struct DiagnosticMessage {
     occurrence_count: usize,
 }
 
-fn diagnostics(output: &Output) -> Diagnostics {
+fn diagnostics(output: &CapturedOutput) -> Diagnostics {
     let mut result = Diagnostics::default();
-    for bytes in [&output.stdout, &output.stderr] {
-        for line in String::from_utf8_lossy(bytes).lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with(RESULT_PREFIX) {
-                continue;
-            }
-            if line.starts_with("at:") && !line.contains("res://") {
-                continue;
-            }
-            let cleanup = (line.contains("RID allocations of type")
-                && line.ends_with("were leaked at exit."))
-                || (line.contains("RIDs of type") && line.ends_with("were leaked."))
-                || (line.starts_with("WARNING: ObjectDB instances leaked at exit"))
-                || (line.contains("ObjectDB instances were leaked at exit"))
-                || (line.starts_with("ERROR:") && line.contains("resources still in use at exit"));
-            let target = if cleanup {
-                &mut result.cleanup
-            } else {
-                &mut result.issues
-            };
-            if let Some(existing) = target.iter_mut().find(|existing| existing.text == line) {
-                existing.occurrence_count += 1;
-            } else {
-                target.push(DiagnosticMessage {
-                    text: line.to_owned(),
-                    occurrence_count: 1,
-                });
-            }
+    for event in &output.lines {
+        let text = String::from_utf8_lossy(&event.bytes);
+        let line = text.trim();
+        if line.is_empty() || line.starts_with(RESULT_PREFIX) {
+            continue;
+        }
+        if line.starts_with("at:") && !line.contains("res://") {
+            continue;
+        }
+        let cleanup = (line.contains("RID allocations of type")
+            && line.ends_with("were leaked at exit."))
+            || (line.contains("RIDs of type") && line.ends_with("were leaked."))
+            || (line.starts_with("WARNING: ObjectDB instances leaked at exit"))
+            || (line.contains("ObjectDB instances were leaked at exit"))
+            || (line.starts_with("ERROR:") && line.contains("resources still in use at exit"));
+        let target = if cleanup {
+            &mut result.cleanup
+        } else {
+            &mut result.issues
+        };
+        if let Some(existing) = target.iter_mut().find(|existing| existing.text == line) {
+            existing.occurrence_count += 1;
+        } else {
+            target.push(DiagnosticMessage {
+                text: line.to_owned(),
+                occurrence_count: 1,
+            });
         }
     }
     result
@@ -354,7 +353,7 @@ fn uid_references(project: &Path, paths: &[String], uid: &str) -> Vec<String> {
 }
 
 fn write_diagnostics(
-    output: &Output,
+    output: &CapturedOutput,
     phase: &str,
     project: &Path,
     paths: &[String],
@@ -416,16 +415,16 @@ fn write_diagnostics(
             "  Use gdkit check --verbose for the original engine messages and stack traces."
         )?;
     }
-    if !output.status.success() {
+    if !output.output.status.success() {
         writeln!(
             stderr,
             "\n{phase}: Godot process exited with {}.",
-            output.status
+            output.output.status
         )?;
     }
     if verbose {
         writeln!(stderr, "\n{phase} full Godot output:")?;
-        for bytes in [&output.stdout, &output.stderr] {
+        for bytes in [&output.output.stdout, &output.output.stderr] {
             for line in String::from_utf8_lossy(bytes).lines() {
                 if !line.starts_with(RESULT_PREFIX) {
                     writeln!(stderr, "{line}")?;
@@ -436,8 +435,8 @@ fn write_diagnostics(
     Ok(())
 }
 
-fn harness_result(output: &Output) -> Result<HarnessResult, Box<dyn Error>> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
+fn harness_result(output: &CapturedOutput) -> Result<HarnessResult, Box<dyn Error>> {
+    let stdout = String::from_utf8_lossy(&output.output.stdout);
     let result = stdout
         .lines()
         .find_map(|line| line.strip_prefix(RESULT_PREFIX))
@@ -563,7 +562,7 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
                 } else {
                     "import (worker startup)"
                 };
-                output
+                CapturedOutput::from_output(output)
             }
             Err(error) => {
                 crate::import_worker::stop_project(project)?;
@@ -579,7 +578,7 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
     drop(import_timer);
     artifacts.preserve("import", &import)?;
     let (filtered_import, ignored) = filter_import_errors(&import, rules);
-    let mut failed = !import.status.success() || has_errors(&filtered_import);
+    let mut failed = !import.output.status.success() || has_errors(&filtered_import.output);
     if ignored > 0 {
         eprintln!(
             "Import: ignored {ignored} configured diagnostic(s); use --verbose for original output."
@@ -616,7 +615,7 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
     )?;
     drop(loading_timer);
     artifacts.preserve("resource-loading", &check)?;
-    let check_failed = !check.status.success() || has_errors(&check);
+    let check_failed = !check.output.status.success() || has_errors(&check.output);
     write_diagnostics(&check, "Resource loading", project, &paths, args.verbose)?;
     let result = match harness_result(&check) {
         Ok(result) => result,
@@ -636,7 +635,7 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
     if !failed {
         for (index, scene) in scenes.iter().enumerate() {
             let phase = format!("Scene smoke {}", scene.display());
-            let (output, timed_out) = smoke_output(
+            let output = smoke_output(
                 &engine,
                 project,
                 scene,
@@ -645,10 +644,11 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
             )?;
             artifacts.preserve(&format!("scene-smoke-{}", index + 1), &output)?;
             write_diagnostics(&output, &phase, project, &paths, args.verbose)?;
-            if timed_out {
+            if output.timed_out {
                 eprintln!("error: {phase} exceeded {} seconds", args.smoke_timeout);
             }
-            failed |= timed_out || !output.status.success() || has_errors(&output);
+            failed |=
+                output.timed_out || !output.output.status.success() || has_errors(&output.output);
             smoke_count += 1;
         }
     } else if !scenes.is_empty() {
@@ -683,8 +683,9 @@ mod tests {
                 stdout: if stdout { message.clone() } else { Vec::new() },
                 stderr: if stdout { Vec::new() } else { message },
             };
-            assert!(output.status.success());
-            assert!(has_errors(&output));
+            let output = CapturedOutput::from_output(output);
+            assert!(output.output.status.success());
+            assert!(has_errors(&output.output));
             assert!(
                 diagnostics(&output)
                     .issues
@@ -724,10 +725,11 @@ mod tests {
             .as_bytes()
             .to_vec(),
         };
+        let output = CapturedOutput::from_output(output);
         let (filtered, count) = filter_import_errors(&output, &rules);
         assert_eq!(count, 1);
-        assert!(has_errors(&filtered));
-        let remaining = String::from_utf8(filtered.stderr).unwrap();
+        assert!(has_errors(&filtered.output));
+        let remaining = String::from_utf8(filtered.output.stderr).unwrap();
         assert!(!remaining.contains("plugin.gd:67"));
         assert!(remaining.contains("Unrelated problem"));
         assert_eq!(remaining.matches("ERROR: Known plugin problem").count(), 3);
@@ -738,8 +740,11 @@ mod tests {
                 .to_vec(),
             stderr: Vec::new(),
         };
-        assert!(!has_errors(&filter_import_errors(&known_only, &rules).0));
-        assert!(has_errors(&known_only));
+        let known_only = CapturedOutput::from_output(known_only);
+        assert!(!has_errors(
+            &filter_import_errors(&known_only, &rules).0.output
+        ));
+        assert!(has_errors(&known_only.output));
     }
 
     #[test]
@@ -761,6 +766,7 @@ mod tests {
             .as_bytes()
             .to_vec(),
         };
+        let output = CapturedOutput::from_output(output);
         let report = diagnostics(&output);
         assert_eq!(report.cleanup.len(), 4);
         assert_eq!(
@@ -774,7 +780,7 @@ mod tests {
         );
         assert!(report.issues[2].text.contains("res://player.gd:3"));
         assert_eq!(report.issues[3].text, "ERROR: Unknown engine failure");
-        assert!(has_errors(&output));
+        assert!(has_errors(&output.output));
         let cleanup_only = Output {
             status: Default::default(),
             stdout: Vec::new(),
@@ -796,6 +802,7 @@ mod tests {
             stdout: b"WARNING: first\nERROR: second\nWARNING: first\n".to_vec(),
             stderr: b"ERROR: second\nWARNING: third\n".to_vec(),
         };
+        let output = CapturedOutput::from_output(output);
         let report = diagnostics(&output);
         assert_eq!(report.issues.len(), 3);
         assert_eq!(report.issues[0].text, "WARNING: first");
@@ -816,15 +823,29 @@ mod tests {
             stdout: b"raw stdout\r\n".to_vec(),
             stderr: b"raw stderr\n".to_vec(),
         };
+        let output = CapturedOutput::from_output(output);
         artifacts.preserve("resource-loading", &output).unwrap();
         assert_eq!(
             fs::read(artifacts.directory.join("resource-loading.stdout.log")).unwrap(),
-            output.stdout
+            output.output.stdout
         );
         assert_eq!(
             fs::read(artifacts.directory.join("resource-loading.stderr.log")).unwrap(),
-            output.stderr
+            output.output.stderr
         );
+        let events =
+            fs::read_to_string(artifacts.directory.join("resource-loading.events.jsonl")).unwrap();
+        let events: Vec<serde_json::Value> = events
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["sequence"], 0);
+        assert_eq!(events[0]["stream"], "stdout");
+        assert_eq!(events[0]["text"], "raw stdout");
+        assert_eq!(events[1]["sequence"], 1);
+        assert_eq!(events[1]["stream"], "stderr");
+        assert!(events[1]["observed_at_unix_ms"].as_u64().unwrap() > 0);
         fs::remove_dir_all(directory).unwrap();
     }
 

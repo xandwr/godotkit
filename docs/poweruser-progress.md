@@ -27,8 +27,8 @@ baseline context and do not count toward new milestone completion.
 
 ## Dashboard
 
-**Recorded delivery: 0/12 milestones complete.** M01 is in progress. No target
-dates or blockers recorded yet.
+**Recorded delivery: 0/12 milestones complete.** M01 and its M02 capture dependency
+are in progress. No target dates or blockers recorded yet.
 
 Dependencies below are a working execution plan derived from the roadmap. They
 can be revised with a recorded reason. Delivery order follows the roadmap;
@@ -37,7 +37,7 @@ independent design work can proceed before prerequisite implementations finish.
 | Order | Milestone | Priority | Status | Prerequisites | Finish line |
 | --- | --- | --- | --- | --- | --- |
 | 1 | [M01 Reports and diagnostics](#m01-reports-and-diagnostics) | P0 | In progress | Baseline | Stable structured outcomes and raw logs |
-| 2 | [M02 Process supervisor](#m02-process-supervisor) | P0 | Planned | M01 contract | Bounded operations, cancellation, owned-process cleanup |
+| 2 | [M02 Process supervisor](#m02-process-supervisor) | P0 | In progress | M01 contract | Bounded operations, cancellation, owned-process cleanup |
 | 3 | [M03 Doctor](#m03-doctor) | P1 | Planned | M01, M02 | Explain selected engine, capabilities, and worker health |
 | 4 | [M04 Native API lookup](#m04-native-api-lookup) | P1 | Planned | M02, M03 identity/capabilities | Correct inherited signatures on official/custom engines |
 | 5 | [M05 Named sessions](#m05-named-sessions) | P1 | Planned | M01, M02 | Launch, logs, status, stop, restart, stale-session rejection |
@@ -78,7 +78,8 @@ These are existing starting points, not newly completed tasks. See the roadmap's
 Status: In progress | Owner: Codex | Started: 2026-09-10 | Target: - | Completed: -
 Blocker: None recorded. Evidence / commits: M01.01-M01.02 report schema and
 serialization tests in `src/report.rs`; raw per-phase stream artifacts and
-occurrence-aware display consolidation in `src/check.rs` (partial M01.03).
+occurrence-aware display consolidation in `src/check.rs`, plus live ordered
+stream capture in `src/process.rs` (partial M01.03).
 
 - [x] M01.01 Define versioned `CheckReport`: engine fingerprint, project snapshot,
   check policy, requested/completed/skipped phases, failures, artifact locations.
@@ -101,8 +102,9 @@ occurrence-aware display consolidation in `src/check.rs` (partial M01.03).
 
 [Roadmap section 2](poweruser-roadmap.md#2-one-engine-process-supervisor).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-10 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: Shared live stream capture and deadline
+termination in `src/process.rs`; direct check processes migrated (partial M02.01-M02.02).
 
 - [ ] M02.01 Centralize arguments, process identity, output spooling, deadlines,
   cancellation, termination, exit status, and artifact retention.
@@ -451,6 +453,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-10 | M01.03, M02.01-M02.02 partial | Added shared live stdout/stderr capture with observed ordering, timestamps, process identity, exact stream reconstruction, and deadlines; migrated fresh import, resource loading, and smoke processes | `src/process.rs`, `src/check.rs`; populate reports from captured events and migrate probe/worker lifecycle paths |
 | 2026-09-10 | M01.03 partial | Retained byte-exact stdout/stderr for each executed engine phase and made human diagnostic consolidation report occurrence counts | `src/check.rs`; replace post-exit stream grouping with ordered shared capture before completing M01.03 |
 | 2026-09-10 | M01.01-M01.02 | Added the versioned report and diagnostic data contract with stable JSON names and round-trip coverage | `src/report.rs`; next integrate ordered capture and raw artifacts |
 | 2026-09-10 | Tracker | Established 12 planned milestones, acceptance checks, and two decision gates from the roadmap; no new delivery claimed | Begin M01 and record implementation evidence |
