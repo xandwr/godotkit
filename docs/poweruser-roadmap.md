@@ -1,5 +1,8 @@
 # gdkit poweruser roadmap
 
+Implementation status, acceptance checklists, and decision records live in the
+[poweruser progress tracker](poweruser-progress.md).
+
 gdkit should make it quick to answer three questions: what does this project mean,
 what happened when it ran, and did this change fix the problem? The best product
 direction is a fast command-line interface backed by Godot's own knowledge, with
