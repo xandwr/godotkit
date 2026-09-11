@@ -19,6 +19,8 @@ pub(crate) struct Config {
     engine: EngineConfig,
     #[serde(default, skip_serializing_if = "CheckConfig::is_empty")]
     pub(crate) check: CheckConfig,
+    #[serde(default, skip_serializing_if = "InspectConfig::is_empty")]
+    pub(crate) inspect: InspectConfig,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,19 @@ impl CheckConfig {
     }
 }
 
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InspectConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) checkpoint_adapter: Option<String>,
+}
+
+impl InspectConfig {
+    fn is_empty(&self) -> bool {
+        self.checkpoint_adapter.is_none()
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportError {
@@ -77,6 +92,18 @@ pub(crate) fn read_config(project: &Path) -> Result<Option<Config>, Box<dyn Erro
         {
             return Err(format!("{}: ignore_import_errors requires an exact ERROR: or SCRIPT ERROR: message and a res:// source path", path.display()).into());
         }
+    }
+    if let Some(adapter) = &config.inspect.checkpoint_adapter
+        && (!adapter.starts_with("res://")
+            || !adapter.ends_with(".gd")
+            || adapter.len() <= "res://.gd".len()
+            || adapter.contains(['\n', '\r']))
+    {
+        return Err(format!(
+            "{}: inspect.checkpoint_adapter must be a res:// path to a GDScript file",
+            path.display()
+        )
+        .into());
     }
     Ok(Some(config))
 }
@@ -351,6 +378,7 @@ pub fn init(args: InitArgs) -> Result<ExitCode, Box<dyn Error>> {
     let relative = pathdiff::diff_paths(&engine, &project).unwrap_or_else(|| engine.clone());
     let config = Config {
         check: CheckConfig::default(),
+        inspect: InspectConfig::default(),
         engine: EngineConfig {
             executable: relative,
         },
@@ -370,6 +398,40 @@ pub fn init(args: InitArgs) -> Result<ExitCode, Box<dyn Error>> {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn validates_checkpoint_adapter_paths() {
+        let directory =
+            env::temp_dir().join(format!("gdkit-checkpoint-config-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let _cleanup = ProbeDirectory(directory.clone());
+        fs::write(
+            directory.join("gdkit.toml"),
+            "[engine]\nexecutable='godot'\n[inspect]\ncheckpoint_adapter='res://tools/checkpoints.gd'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_config(&directory)
+                .unwrap()
+                .unwrap()
+                .inspect
+                .checkpoint_adapter
+                .as_deref(),
+            Some("res://tools/checkpoints.gd")
+        );
+        fs::write(
+            directory.join("gdkit.toml"),
+            "[engine]\nexecutable='godot'\n[inspect]\ncheckpoint_adapter='../checkpoints.gd'\n",
+        )
+        .unwrap();
+        assert!(
+            read_config(&directory)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("must be a res:// path")
+        );
+    }
 
     #[test]
     fn cache_reuses_only_successful_matching_probes() {

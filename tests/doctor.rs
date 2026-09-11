@@ -81,6 +81,29 @@ fn reports_engine_cache_policy_and_project_gotchas() {
     let configured = String::from_utf8(configured.stdout).unwrap();
     assert!(configured.contains("selected by:"), "{configured}");
     assert!(configured.contains("gdkit.toml"), "{configured}");
+    assert!(
+        configured.contains("checkpoint adapter: not configured"),
+        "{configured}"
+    );
+
+    fs::write(
+        directory.join("gdkit.toml"),
+        format!(
+            "[engine]\nexecutable='{engine}'\n[inspect]\ncheckpoint_adapter='res://tools/checkpoints.gd'\n"
+        ),
+    )
+    .unwrap();
+    let checkpoints = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
+        .args(["doctor", directory.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(checkpoints.status.success());
+    assert!(
+        String::from_utf8(checkpoints.stdout)
+            .unwrap()
+            .contains("checkpoint adapter: res://tools/checkpoints.gd")
+    );
 
     fs::write(directory.join("gdkit.toml"), "invalid toml [").unwrap();
     let overridden = run();

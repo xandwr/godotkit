@@ -66,6 +66,9 @@ pub(crate) fn run(args: DoctorArgs) -> Result<ExitCode, Box<dyn Error>> {
     let ignored_import_errors = config
         .as_ref()
         .map_or(0, |config| config.check.ignore_import_errors.len());
+    let checkpoint_adapter = config
+        .as_ref()
+        .and_then(|config| config.inspect.checkpoint_adapter.as_deref());
     let prior_cache = crate::engine::probe_cache_health(&engine, &project);
     let (version, cached) = crate::engine::validated_version(&engine, &project)?;
     let worker = crate::import_worker::inspect(&project, &engine);
@@ -117,6 +120,10 @@ pub(crate) fn run(args: DoctorArgs) -> Result<ExitCode, Box<dyn Error>> {
     for line in warning_policy(&project, strict_methods)? {
         println!("  {line}");
     }
+    println!(
+        "checkpoint adapter: {}",
+        checkpoint_adapter.unwrap_or("not configured")
+    );
 
     let mut gotchas = Vec::new();
     if let Some(issue) = config_issue {

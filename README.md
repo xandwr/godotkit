@@ -285,6 +285,20 @@ The wrapper preserves project arguments and loads the selected or configured
 main scene after its loopback endpoint is ready. Sessions created by an older
 gdkit build must be restarted before they can be inspected.
 
+Projects can declare the script that gives domain meaning to live checkpoints:
+
+```toml
+[inspect]
+checkpoint_adapter = "res://tools/gdkit_checkpoints.gd"
+```
+
+The GDScript must define `collect_checkpoints(tree: SceneTree) -> Dictionary`.
+Its top-level keys name stable checkpoints and each value must be a dictionary,
+for example `network_session`, `lobby_state`, `round_state`, and
+`local_player_state`. The project owns the names and values in this adapter.
+Declaring an adapter does not execute it during `check`, `doctor`, or normal
+game startup.
+
 `autoloads` finds the nearest enclosing Godot project and prints its saved
 autoload initialization order with zero-based indices, names, singleton status,
 and decoded resource paths. It reads `project.godot` through gdview without
