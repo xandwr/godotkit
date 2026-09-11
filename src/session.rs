@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     collections::HashMap,
     error::Error,
     fs::{self, OpenOptions},
@@ -30,18 +31,24 @@ pub(crate) struct SessionRecord {
     pid: u32,
     process_started: u64,
     launched_at_unix_ms: u64,
-    log: PathBuf,
+    pub(crate) log: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) user_data_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    environment: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) probe: Option<crate::runtime_probe::ProbeEndpoint>,
 }
 
-struct LaunchSpec {
-    name: String,
-    project: PathBuf,
-    engine: PathBuf,
-    scene: Option<String>,
-    arguments: Vec<String>,
-    headless: bool,
+pub(crate) struct LaunchSpec {
+    pub(crate) name: String,
+    pub(crate) project: PathBuf,
+    pub(crate) engine: PathBuf,
+    pub(crate) scene: Option<String>,
+    pub(crate) arguments: Vec<String>,
+    pub(crate) headless: bool,
+    pub(crate) user_data_dir: Option<PathBuf>,
+    pub(crate) environment: BTreeMap<String, String>,
 }
 
 #[cfg(windows)]
@@ -234,7 +241,7 @@ fn write_record(project: &Path, record: &SessionRecord) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
+pub(crate) fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
     validate_name(&spec.name)?;
     let scene_path = validate_scene(&spec.project, spec.scene.as_deref())?;
     let launch_scene = scene_path
@@ -288,6 +295,19 @@ fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
             "GDKIT_PROBE_SCENE",
             launch_scene.as_deref().unwrap_or_default(),
         );
+    if let Some(directory) = &spec.user_data_dir {
+        fs::create_dir_all(directory)?;
+        #[cfg(windows)]
+        command
+            .env("APPDATA", directory.join("roaming"))
+            .env("LOCALAPPDATA", directory.join("local"));
+        #[cfg(unix)]
+        command
+            .env("XDG_DATA_HOME", directory.join("data"))
+            .env("XDG_CONFIG_HOME", directory.join("config"))
+            .env("XDG_CACHE_HOME", directory.join("cache"));
+    }
+    command.envs(&spec.environment);
     if !spec.arguments.is_empty() {
         command.arg("--").args(&spec.arguments);
     }
@@ -340,6 +360,8 @@ fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
         process_started,
         launched_at_unix_ms: timestamp(),
         log: log_path,
+        user_data_dir: spec.user_data_dir,
+        environment: spec.environment,
         probe: Some(probe),
     };
     if let Err(error) = write_record(&spec.project, &record) {
@@ -358,6 +380,8 @@ fn spec_from_record(record: &SessionRecord) -> LaunchSpec {
         scene: record.scene.clone(),
         arguments: record.arguments.clone(),
         headless: record.headless,
+        user_data_dir: record.user_data_dir.clone(),
+        environment: record.environment.clone(),
     }
 }
 
@@ -392,6 +416,8 @@ pub(crate) fn run(args: RunArgs) -> Result<ExitCode, Box<dyn Error>> {
         scene: args.scene,
         arguments: args.arguments,
         headless: args.headless,
+        user_data_dir: None,
+        environment: BTreeMap::new(),
     })?;
     print_started(&record);
     Ok(ExitCode::SUCCESS)
@@ -467,6 +493,29 @@ pub(crate) fn stop(args: SessionArgs) -> Result<ExitCode, Box<dyn Error>> {
     }
     println!("stopped {}@{}", record.name, record.generation);
     Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn disconnect_record(record: &SessionRecord) -> Result<bool, Box<dyn Error>> {
+    if !is_running(record) {
+        return Ok(false);
+    }
+    let Some(probe) = &record.probe else {
+        return Err("session predates orderly disconnect support; restart it first".into());
+    };
+    crate::runtime_probe::disconnect(probe, &record.generation)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while is_running(record) && std::time::Instant::now() < deadline {
+        thread::sleep(std::time::Duration::from_millis(25));
+    }
+    if is_running(record) {
+        return Err("session did not exit after the orderly disconnect request".into());
+    }
+    let _ = crate::runtime_probe::stop(probe);
+    Ok(true)
+}
+
+pub(crate) fn crash_record(record: &SessionRecord) -> io::Result<bool> {
+    terminate(record)
 }
 
 pub(crate) fn restart(args: SessionArgs) -> Result<ExitCode, Box<dyn Error>> {
@@ -643,6 +692,8 @@ mod tests {
             process_started: 1,
             launched_at_unix_ms,
             log: root(&project).join(format!("logs/{generation}.log")),
+            user_data_dir: None,
+            environment: BTreeMap::new(),
             probe: None,
         };
         write_record(&project, &record("first", 1)).unwrap();

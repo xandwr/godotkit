@@ -1,0 +1,693 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fs::{self, OpenOptions},
+    io::{self, Write},
+    net::{Ipv4Addr, UdpSocket},
+    path::{Path, PathBuf},
+    process::ExitCode,
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::{
+    cli::{
+        ScenarioArgs, ScenarioCommand, ScenarioNameArgs, ScenarioParticipantArgs, ScenarioStartArgs,
+    },
+    session::{self, LaunchSpec, SessionRecord},
+};
+
+const SCENARIO_SCHEMA_VERSION: u32 = 1;
+type ReservedPorts = (BTreeMap<String, u16>, Vec<UdpSocket>);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScenarioConfig {
+    pub(crate) transport: ScenarioTransport,
+    #[serde(default)]
+    ports: BTreeMap<String, u16>,
+    #[serde(default = "default_timeout")]
+    timeout_seconds: u64,
+    participants: Vec<ParticipantConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ScenarioTransport {
+    DedicatedEnet,
+    SteamP2p,
+}
+
+impl ScenarioTransport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DedicatedEnet => "dedicated_enet",
+            Self::SteamP2p => "steam_p2p",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ParticipantConfig {
+    name: String,
+    role: ParticipantRole,
+    #[serde(default)]
+    scene: Option<String>,
+    #[serde(default = "default_headless")]
+    headless: bool,
+    #[serde(default)]
+    arguments: Vec<String>,
+    readiness: Readiness,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ParticipantRole {
+    Server,
+    Client,
+    LateClient,
+}
+
+impl ParticipantRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Server => "server",
+            Self::Client => "client",
+            Self::LateClient => "late_client",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Readiness {
+    path: String,
+    equals: Value,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioRun {
+    schema_version: u32,
+    name: String,
+    generation: String,
+    transport: ScenarioTransport,
+    started_at_unix_ms: u64,
+    ports: BTreeMap<String, u16>,
+    participants: Vec<ParticipantRun>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ParticipantRun {
+    name: String,
+    role: ParticipantRole,
+    session: String,
+    log: PathBuf,
+    user_data_dir: PathBuf,
+}
+
+fn default_timeout() -> u64 {
+    30
+}
+
+fn default_headless() -> bool {
+    true
+}
+
+fn timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn validate_component(kind: &str, value: &str) -> Result<(), Box<dyn Error>> {
+    if value.is_empty()
+        || value.len() > 40
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            format!("{kind} names must contain 1-40 ASCII letters, numbers, '-' or '_'").into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_config(name: &str, config: &ScenarioConfig) -> Result<(), Box<dyn Error>> {
+    validate_component("scenario", name)?;
+    if config.timeout_seconds == 0 || config.timeout_seconds > 3600 {
+        return Err("scenario timeout_seconds must be between 1 and 3600".into());
+    }
+    if config.participants.is_empty() {
+        return Err("scenario must declare at least one participant".into());
+    }
+    let mut names = BTreeSet::new();
+    for participant in &config.participants {
+        validate_component("participant", &participant.name)?;
+        if !names.insert(&participant.name) {
+            return Err(format!("duplicate scenario participant '{}'", participant.name).into());
+        }
+        if !participant.readiness.path.starts_with('/') {
+            return Err(format!(
+                "participant '{}': readiness.path must be a JSON Pointer beginning with '/'",
+                participant.name
+            )
+            .into());
+        }
+        let session_name = format!("scenario-{name}-{}", participant.name);
+        if session_name.len() > 64 {
+            return Err(format!(
+                "participant '{}': generated session name exceeds 64 characters",
+                participant.name
+            )
+            .into());
+        }
+    }
+    for port in config.ports.keys() {
+        validate_component("port", port)?;
+    }
+    let servers = config
+        .participants
+        .iter()
+        .filter(|participant| participant.role == ParticipantRole::Server)
+        .count();
+    let late_clients = config
+        .participants
+        .iter()
+        .filter(|participant| participant.role == ParticipantRole::LateClient)
+        .count();
+    match config.transport {
+        ScenarioTransport::DedicatedEnet => {
+            if servers != 1 {
+                return Err("dedicated_enet scenarios must declare exactly one server".into());
+            }
+            if config.ports.is_empty() {
+                return Err("dedicated_enet scenarios must declare at least one named port".into());
+            }
+        }
+        ScenarioTransport::SteamP2p if servers != 0 => {
+            return Err("steam_p2p scenarios cannot declare a dedicated server participant".into());
+        }
+        ScenarioTransport::SteamP2p => {}
+    }
+    if late_clients == 0 {
+        return Err("scenario must declare at least one late_client participant".into());
+    }
+    Ok(())
+}
+
+fn reserve_ports(requested: &BTreeMap<String, u16>) -> Result<ReservedPorts, Box<dyn Error>> {
+    let mut allocated = BTreeMap::new();
+    let mut listeners = Vec::new();
+    for (name, port) in requested {
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, *port)).map_err(|error| {
+            format!("could not reserve scenario port '{name}' ({port}): {error}")
+        })?;
+        let actual = socket.local_addr()?.port();
+        allocated.insert(name.clone(), actual);
+        listeners.push(socket);
+    }
+    Ok((allocated, listeners))
+}
+
+fn expand_argument(
+    argument: &str,
+    participant: &str,
+    user_data_dir: &Path,
+    ports: &BTreeMap<String, u16>,
+) -> Result<String, Box<dyn Error>> {
+    let mut expanded = argument
+        .replace("{participant}", participant)
+        .replace("{user_data_dir}", &user_data_dir.to_string_lossy());
+    for (name, port) in ports {
+        expanded = expanded.replace(&format!("{{port.{name}}}"), &port.to_string());
+    }
+    if expanded.contains('{') || expanded.contains('}') {
+        return Err(format!("unknown scenario argument placeholder in '{argument}'").into());
+    }
+    Ok(expanded)
+}
+
+fn root(project: &Path) -> PathBuf {
+    project.join(".godot/gdkit/scenarios")
+}
+
+fn records_root(project: &Path) -> PathBuf {
+    root(project).join("records")
+}
+
+fn write_run(project: &Path, run: &ScenarioRun) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(records_root(project))?;
+    let path = records_root(project).join(format!("{}-{}.json", run.name, run.generation));
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(&serde_json::to_vec_pretty(run)?)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn read_runs(project: &Path) -> Result<Vec<ScenarioRun>, Box<dyn Error>> {
+    let entries = match fs::read_dir(records_root(project)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut runs = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            let run: ScenarioRun = serde_json::from_slice(&fs::read(&path)?)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            if run.schema_version != SCENARIO_SCHEMA_VERSION {
+                return Err(format!(
+                    "{}: unsupported scenario schema version {}",
+                    path.display(),
+                    run.schema_version
+                )
+                .into());
+            }
+            runs.push(run);
+        }
+    }
+    runs.sort_by(|left, right| {
+        left.started_at_unix_ms
+            .cmp(&right.started_at_unix_ms)
+            .then_with(|| left.generation.cmp(&right.generation))
+    });
+    Ok(runs)
+}
+
+fn select_run(project: &Path, name: &str) -> Result<Option<ScenarioRun>, Box<dyn Error>> {
+    validate_component("scenario", name)?;
+    Ok(read_runs(project)?
+        .into_iter()
+        .rev()
+        .find(|run| run.name == name))
+}
+
+fn participant_record(
+    project: &Path,
+    participant: &ParticipantRun,
+) -> Result<SessionRecord, Box<dyn Error>> {
+    session::select_record(project, &participant.session)?.ok_or_else(|| {
+        format!(
+            "scenario participant '{}' has no matching session record",
+            participant.name
+        )
+        .into()
+    })
+}
+
+fn wait_ready(
+    record: &SessionRecord,
+    participant: &ParticipantConfig,
+    adapter: &str,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !session::is_running(record) {
+            return Err(format!(
+                "participant '{}' exited before readiness {} == {}",
+                participant.name, participant.readiness.path, participant.readiness.equals
+            )
+            .into());
+        }
+        let values = crate::runtime_probe::checkpoint_values(record, adapter)?;
+        if values.pointer(&participant.readiness.path) == Some(&participant.readiness.equals) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "participant '{}' did not reach readiness {} == {} within {} seconds",
+                participant.name,
+                participant.readiness.path,
+                participant.readiness.equals,
+                timeout.as_secs()
+            )
+            .into());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn cleanup(records: &[SessionRecord]) {
+    for record in records.iter().rev() {
+        let _ = session::crash_record(record);
+    }
+}
+
+fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let project = crate::engine::project_root(&args.project)?;
+    let config =
+        crate::engine::read_config(&project)?.ok_or("named scenarios require gdkit.toml")?;
+    let scenario = config.scenarios.get(&args.name).ok_or_else(|| {
+        format!(
+            "no scenario named '{}' is declared in gdkit.toml",
+            args.name
+        )
+    })?;
+    validate_config(&args.name, scenario)?;
+    let adapter = config
+        .inspect
+        .checkpoint_adapter
+        .as_deref()
+        .ok_or("named scenarios require inspect.checkpoint_adapter in gdkit.toml")?;
+    let engine = crate::engine::resolve(&project, args.godot.as_deref())?;
+    if let Some(previous) = select_run(&project, &args.name)? {
+        for participant in &previous.participants {
+            let record = participant_record(&project, participant)?;
+            if session::is_running(&record) {
+                return Err(format!(
+                    "scenario '{}' already has a running participant '{}'; stop it first",
+                    args.name, participant.name
+                )
+                .into());
+            }
+        }
+    }
+    let (ports, reservations) = reserve_ports(&scenario.ports)?;
+    let generation = format!("{:x}-{:x}", timestamp(), std::process::id());
+    let run_root = root(&project)
+        .join("runs")
+        .join(format!("{}-{generation}", args.name));
+    fs::create_dir_all(&run_root)?;
+    drop(reservations);
+
+    let mut launched = Vec::new();
+    let mut run_participants = Vec::new();
+    let timeout = Duration::from_secs(scenario.timeout_seconds);
+    let stages = [
+        &[ParticipantRole::Server][..],
+        &[ParticipantRole::Client][..],
+        &[ParticipantRole::LateClient][..],
+    ];
+    for roles in stages {
+        let stage: Vec<_> = scenario
+            .participants
+            .iter()
+            .filter(|participant| roles.contains(&participant.role))
+            .collect();
+        for participant in &stage {
+            let user_data_dir = run_root.join("user-data").join(&participant.name);
+            let arguments = match participant
+                .arguments
+                .iter()
+                .map(|argument| {
+                    expand_argument(argument, &participant.name, &user_data_dir, &ports)
+                })
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    cleanup(&launched);
+                    return Err(error);
+                }
+            };
+            let session_name = format!("scenario-{}-{}", args.name, participant.name);
+            let mut environment = BTreeMap::new();
+            environment.insert("GDKIT_SCENARIO".into(), args.name.clone());
+            environment.insert(
+                "GDKIT_SCENARIO_PARTICIPANT".into(),
+                participant.name.clone(),
+            );
+            environment.insert(
+                "GDKIT_SCENARIO_ROLE".into(),
+                participant.role.as_str().into(),
+            );
+            environment.insert(
+                "GDKIT_SCENARIO_TRANSPORT".into(),
+                scenario.transport.as_str().into(),
+            );
+            for (name, port) in &ports {
+                environment.insert(
+                    format!(
+                        "GDKIT_SCENARIO_PORT_{}",
+                        name.to_ascii_uppercase().replace('-', "_")
+                    ),
+                    port.to_string(),
+                );
+            }
+            let record = match session::launch(LaunchSpec {
+                name: session_name,
+                project: project.clone(),
+                engine: engine.clone(),
+                scene: participant.scene.clone(),
+                arguments,
+                headless: participant.headless,
+                user_data_dir: Some(user_data_dir.clone()),
+                environment,
+            }) {
+                Ok(record) => record,
+                Err(error) => {
+                    cleanup(&launched);
+                    return Err(error);
+                }
+            };
+            println!(
+                "started {} ({}) as {}@{}",
+                participant.name,
+                participant.role.as_str(),
+                record.name,
+                record.generation
+            );
+            run_participants.push(ParticipantRun {
+                name: participant.name.clone(),
+                role: participant.role,
+                session: format!("{}@{}", record.name, record.generation),
+                log: record.log.clone(),
+                user_data_dir,
+            });
+            launched.push(record);
+        }
+        for participant in stage {
+            let record = launched
+                .iter()
+                .find(|record| {
+                    record.name == format!("scenario-{}-{}", args.name, participant.name)
+                })
+                .expect("launched participant");
+            if let Err(error) = wait_ready(record, participant, adapter, timeout) {
+                cleanup(&launched);
+                return Err(error);
+            }
+            println!(
+                "ready {}: {} == {}",
+                participant.name, participant.readiness.path, participant.readiness.equals
+            );
+        }
+    }
+    let run = ScenarioRun {
+        schema_version: SCENARIO_SCHEMA_VERSION,
+        name: args.name,
+        generation,
+        transport: scenario.transport,
+        started_at_unix_ms: timestamp(),
+        ports,
+        participants: run_participants,
+    };
+    if let Err(error) = write_run(&project, &run) {
+        cleanup(&launched);
+        return Err(error);
+    }
+    println!("scenario {}@{} is ready", run.name, run.generation);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn status(args: ScenarioNameArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let project = crate::engine::project_root(&args.project)?;
+    let Some(run) = select_run(&project, &args.name)? else {
+        eprintln!("error: no run of scenario '{}' was found", args.name);
+        return Ok(ExitCode::from(1));
+    };
+    println!(
+        "scenario: {}@{} transport={}",
+        run.name,
+        run.generation,
+        run.transport.as_str()
+    );
+    for (name, port) in &run.ports {
+        println!("port {name}: {port}");
+    }
+    for participant in &run.participants {
+        let record = participant_record(&project, participant)?;
+        println!(
+            "{} ({}) {} log={} user_data={}",
+            participant.name,
+            participant.role.as_str(),
+            if session::is_running(&record) {
+                "running"
+            } else {
+                "exited"
+            },
+            crate::engine::display_path(&participant.log),
+            crate::engine::display_path(&participant.user_data_dir)
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn control_participant(
+    args: ScenarioParticipantArgs,
+    crash: bool,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let project = crate::engine::project_root(&args.project)?;
+    let Some(run) = select_run(&project, &args.name)? else {
+        eprintln!("error: no run of scenario '{}' was found", args.name);
+        return Ok(ExitCode::from(1));
+    };
+    let Some(participant) = run
+        .participants
+        .iter()
+        .find(|participant| participant.name == args.participant)
+    else {
+        eprintln!(
+            "error: scenario '{}' has no participant '{}'",
+            args.name, args.participant
+        );
+        return Ok(ExitCode::from(1));
+    };
+    let record = participant_record(&project, participant)?;
+    let changed = if crash {
+        session::crash_record(&record)?
+    } else {
+        session::disconnect_record(&record)?
+    };
+    if !changed {
+        eprintln!("error: participant '{}' is not running", participant.name);
+        return Ok(ExitCode::from(1));
+    }
+    println!(
+        "{} participant '{}'",
+        if crash { "crashed" } else { "disconnected" },
+        participant.name
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn stop(args: ScenarioNameArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let project = crate::engine::project_root(&args.project)?;
+    let Some(run) = select_run(&project, &args.name)? else {
+        eprintln!("error: no run of scenario '{}' was found", args.name);
+        return Ok(ExitCode::from(1));
+    };
+    let mut failed = false;
+    for participant in run.participants.iter().rev() {
+        let record = participant_record(&project, participant)?;
+        if !session::is_running(&record) {
+            continue;
+        }
+        match session::disconnect_record(&record) {
+            Ok(true) => println!("disconnected participant '{}'", participant.name),
+            Ok(false) => {}
+            Err(error) => {
+                failed = true;
+                eprintln!(
+                    "error: participant '{}' did not disconnect: {error}",
+                    participant.name
+                );
+            }
+        }
+    }
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+pub(crate) fn run(args: ScenarioArgs) -> Result<ExitCode, Box<dyn Error>> {
+    match args.command {
+        ScenarioCommand::Start(args) => start(args),
+        ScenarioCommand::Status(args) => status(args),
+        ScenarioCommand::Disconnect(args) => control_participant(args, false),
+        ScenarioCommand::Crash(args) => control_participant(args, true),
+        ScenarioCommand::Stop(args) => stop(args),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_explicit_transports_and_expands_named_ports() {
+        let config: ScenarioConfig = toml::from_str(
+            r#"
+transport = "dedicated_enet"
+timeout_seconds = 10
+ports = { game = 0 }
+
+[[participants]]
+name = "server"
+role = "server"
+arguments = ["--server", "--port={port.game}"]
+readiness = { path = "/network/listening", equals = true }
+
+[[participants]]
+name = "client-1"
+role = "client"
+arguments = ["--connect=127.0.0.1:{port.game}"]
+readiness = { path = "/network/connected", equals = true }
+
+[[participants]]
+name = "client-2"
+role = "client"
+readiness = { path = "/network/connected", equals = true }
+
+[[participants]]
+name = "late-client"
+role = "late_client"
+readiness = { path = "/network/connected", equals = true }
+"#,
+        )
+        .unwrap();
+        validate_config("late_join", &config).unwrap();
+        let ports = BTreeMap::from([("game".into(), 7000)]);
+        assert_eq!(
+            expand_argument(
+                "--connect=127.0.0.1:{port.game}",
+                "client-1",
+                Path::new("data"),
+                &ports
+            )
+            .unwrap(),
+            "--connect=127.0.0.1:7000"
+        );
+    }
+
+    #[test]
+    fn rejects_implicit_or_mixed_transport_shapes() {
+        let missing = toml::from_str::<ScenarioConfig>(
+            "participants = [{ name = 'late', role = 'late_client', readiness = { path = '/ready', equals = true } }]",
+        );
+        assert!(missing.is_err());
+
+        let steam_with_server: ScenarioConfig = toml::from_str(
+            r#"
+transport = "steam_p2p"
+[[participants]]
+name = "server"
+role = "server"
+readiness = { path = "/ready", equals = true }
+[[participants]]
+name = "late"
+role = "late_client"
+readiness = { path = "/ready", equals = true }
+"#,
+        )
+        .unwrap();
+        assert!(validate_config("mixed", &steam_with_server).is_err());
+    }
+}

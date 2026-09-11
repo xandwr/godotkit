@@ -45,6 +45,8 @@ pub enum Command {
     Restart(SessionArgs),
     #[command(about = "Inspect a live named session")]
     Inspect(InspectArgs),
+    #[command(about = "Run and control named multiplayer scenarios")]
+    Scenario(ScenarioArgs),
 }
 
 #[derive(Debug, Args)]
@@ -339,6 +341,54 @@ pub struct InspectArgs {
         help = "Select human or JSON result output"
     )]
     pub output: NetOutput,
+}
+
+#[derive(Debug, Args)]
+pub struct ScenarioArgs {
+    #[command(subcommand)]
+    pub command: ScenarioCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ScenarioCommand {
+    #[command(about = "Start a configured scenario and await participant readiness")]
+    Start(ScenarioStartArgs),
+    #[command(about = "Show the latest run of a configured scenario")]
+    Status(ScenarioNameArgs),
+    #[command(about = "Orderly disconnect one scenario participant")]
+    Disconnect(ScenarioParticipantArgs),
+    #[command(about = "Force one scenario participant to crash")]
+    Crash(ScenarioParticipantArgs),
+    #[command(about = "Orderly disconnect all running scenario participants")]
+    Stop(ScenarioNameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ScenarioStartArgs {
+    #[arg(help = "Scenario name declared in gdkit.toml")]
+    pub name: String,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct ScenarioNameArgs {
+    #[arg(help = "Scenario name declared in gdkit.toml")]
+    pub name: String,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ScenarioParticipantArgs {
+    #[arg(help = "Scenario name declared in gdkit.toml")]
+    pub name: String,
+    #[arg(help = "Participant name declared in the scenario")]
+    pub participant: String,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
 }
 
 #[derive(Debug, Args)]

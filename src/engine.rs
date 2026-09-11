@@ -21,6 +21,8 @@ pub(crate) struct Config {
     pub(crate) check: CheckConfig,
     #[serde(default, skip_serializing_if = "InspectConfig::is_empty")]
     pub(crate) inspect: InspectConfig,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) scenarios: std::collections::BTreeMap<String, crate::scenario::ScenarioConfig>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -379,6 +381,7 @@ pub fn init(args: InitArgs) -> Result<ExitCode, Box<dyn Error>> {
     let config = Config {
         check: CheckConfig::default(),
         inspect: InspectConfig::default(),
+        scenarios: std::collections::BTreeMap::new(),
         engine: EngineConfig {
             executable: relative,
         },

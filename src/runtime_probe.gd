@@ -109,7 +109,7 @@ func valid_request(request: Variant) -> bool:
 		and request.max_response_bytes <= 8388608.0
 	if not base_valid:
 		return false
-	if request.get("kind") == "network_observation":
+	if request.get("kind") == "network_observation" or request.get("kind") == "disconnect":
 		return request.size() == 7
 	return request.size() == 8 \
 		and request.get("kind") == "checkpoint_observation" \
@@ -129,6 +129,15 @@ func answer(request: Dictionary) -> void:
 		"request_id": request.request_id,
 		"generation": generation,
 	}
+	if request.kind == "disconnect":
+		var disconnect_encoded := (JSON.stringify(response) + "\n").to_utf8_buffer()
+		if request.deadline_unix_ms >= Time.get_unix_time_from_system() * 1000.0:
+			peer.put_data(disconnect_encoded)
+			peer.disconnect_from_host()
+			peer = null
+			buffer.clear()
+			call_deferred("quit")
+		return
 	if request.kind == "checkpoint_observation":
 		response.checkpoints = collect_checkpoints(request.checkpoint_adapter)
 		var checkpoint_encoded := (JSON.stringify(response) + "\n").to_utf8_buffer()

@@ -415,6 +415,43 @@ pub(crate) fn stop(endpoint: &ProbeEndpoint) -> Result<bool, Box<dyn Error>> {
     )?)
 }
 
+pub(crate) fn disconnect(endpoint: &ProbeEndpoint, generation: &str) -> Result<(), Box<dyn Error>> {
+    let (request_id, response): (String, Response) = send_request(
+        endpoint.port,
+        &endpoint.token,
+        generation,
+        "disconnect",
+        None,
+    )?;
+    if response.schema_version != REQUEST_SCHEMA_VERSION
+        || response.request_id != request_id
+        || response.generation != generation
+    {
+        return Err("runtime probe returned a mismatched disconnect response".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn checkpoint_values(
+    record: &crate::session::SessionRecord,
+    adapter: &str,
+) -> Result<Value, Box<dyn Error>> {
+    let endpoint = record
+        .probe
+        .as_ref()
+        .ok_or("session predates checkpoint support; restart it first")?;
+    let response = request_checkpoints(endpoint, &record.generation, adapter)?;
+    let checkpoints = response.checkpoints.as_ref().expect("checkpoint response");
+    if checkpoints.status == CheckpointStatus::Error {
+        return Err(checkpoints
+            .error
+            .clone()
+            .unwrap_or_else(|| "checkpoint collection failed".into())
+            .into());
+    }
+    Ok(response_checkpoint_values(&response))
+}
+
 fn send_request<T: for<'de> Deserialize<'de>>(
     port: u16,
     endpoint_token: &str,
@@ -546,7 +583,7 @@ fn live_record(
     Ok(Some(record))
 }
 
-fn checkpoint_values(response: &Response) -> Value {
+fn response_checkpoint_values(response: &Response) -> Value {
     serde_json::to_value(
         &response
             .checkpoints
@@ -631,8 +668,8 @@ fn compare_values(
 }
 
 fn compare_checkpoints(left: Response, right: Response) -> CheckpointComparison {
-    let left_values = checkpoint_values(&left);
-    let right_values = checkpoint_values(&right);
+    let left_values = response_checkpoint_values(&left);
+    let right_values = response_checkpoint_values(&right);
     let mut differences = Vec::new();
     let mut truncated = false;
     compare_values(

@@ -363,6 +363,60 @@ and report recursive differences by JSON Pointer path. Matching checkpoints exit
 0; differences or collection errors exit 1. A comparison emits at most 2,048
 differences, and JSON output includes both original bounded captures.
 
+Named multiplayer scenarios build on durable sessions and project checkpoints.
+Declare them in `gdkit.toml` with an explicit transport, named ports, participant
+roles, launch arguments, and a JSON Pointer readiness condition:
+
+```toml
+[scenarios.late_join]
+transport = "dedicated_enet"
+timeout_seconds = 20
+ports = { game = 7000 }
+
+[[scenarios.late_join.participants]]
+name = "server"
+role = "server"
+arguments = ["--server", "--port={port.game}"]
+readiness = { path = "/network_session/listening", equals = true }
+
+[[scenarios.late_join.participants]]
+name = "client-1"
+role = "client"
+arguments = ["--enet-client", "--port={port.game}"]
+readiness = { path = "/network_session/connected", equals = true }
+
+[[scenarios.late_join.participants]]
+name = "client-2"
+role = "client"
+arguments = ["--enet-client", "--port={port.game}"]
+readiness = { path = "/network_session/connected", equals = true }
+
+[[scenarios.late_join.participants]]
+name = "late-client"
+role = "late_client"
+arguments = ["--enet-client", "--port={port.game}"]
+readiness = { path = "/network_session/connected", equals = true }
+```
+
+Run it with `gdkit scenario start late_join`. The server starts and becomes ready
+first, regular clients start as a group, and late clients start only after all
+regular clients are ready. Port `0` asks the OS to deliberately allocate a free
+port; a nonzero port must be available or startup fails. Arguments may use
+`{port.NAME}`, `{participant}`, and `{user_data_dir}`. Every participant receives
+its own user-data roots, durable log, session generation, and the environment
+variables `GDKIT_SCENARIO`, `GDKIT_SCENARIO_PARTICIPANT`,
+`GDKIT_SCENARIO_ROLE`, `GDKIT_SCENARIO_TRANSPORT`, and
+`GDKIT_SCENARIO_PORT_NAME`.
+
+The only accepted transports are `dedicated_enet` and `steam_p2p`; transport is
+never inferred from arguments and one is never substituted for the other.
+Dedicated ENet scenarios require exactly one server and at least one named port.
+Steam P2P scenarios reject dedicated-server participants. Both require an
+explicit late client. Use `gdkit scenario status NAME`, `disconnect NAME
+PARTICIPANT`, `crash NAME PARTICIPANT`, and `stop NAME` to control the latest
+run. Disconnect requests orderly engine shutdown and reports failure without
+falling back to a forced crash; crash is the explicit force-termination command.
+
 `autoloads` finds the nearest enclosing Godot project and prints its saved
 autoload initialization order with zero-based indices, names, singleton status,
 and decoded resource paths. It reads `project.godot` through gdview without

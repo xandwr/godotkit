@@ -270,14 +270,17 @@ source project's imported state. Named protocol messages and readiness remain.
 
 [Roadmap section 6](poweruser-roadmap.md#6-reproducible-scenarios-and-multiplayer).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: pending current commit. Named scenarios
+now orchestrate explicit dedicated ENet or Steam P2P participants with staged late
+join, named port allocation, readiness checkpoints, isolated logs/user data, and
+distinct orderly-disconnect and forced-crash controls.
 
 - [ ] M09.01 Orchestrate a server and two clients, await joins, change shared state,
   join a late client, compare declared state, and disconnect a peer.
-- [ ] M09.02 Assign distinct participant role, log stream, run identity, arguments,
+- [x] M09.02 Assign distinct participant role, log stream, run identity, arguments,
   and data directory so participants cannot overwrite each other's settings.
-- [ ] M09.03 Allocate endpoints deliberately and capture network configuration;
+- [x] M09.03 Allocate endpoints deliberately and capture network configuration;
   distinguish dedicated-server features/exports from headless launch.
 - [ ] M09.04 Let project adapters define synchronized state and checkpoint tolerances;
   identify the first divergent participant with relevant checkpoint values.
@@ -471,6 +474,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-11 | M08.01-M08.02 partial, M09.01-M09.03 partial, M09.05 partial | Added named multiplayer scenarios with explicit `dedicated_enet`/`steam_p2p` transport, staged server/client/late-client startup, bounded readiness checkpoints, named ports, per-participant logs and user-data roots, plus separate orderly disconnect and forced crash controls | `src/scenario.rs`, `src/session.rs`, `src/runtime_probe.gd`, `tests/scenarios.rs`; validated a real ENet server, two clients, late join, isolation, disconnect, crash, and cleanup on custom Godot 4.7.3; next add persisted failure artifacts and scenario actions beyond process control |
 | 2026-09-11 | M09.02 partial | Added bounded recursive checkpoint comparison across exact live session generations with capture skew, JSON Pointer differences, and automation-friendly exit status | `src/runtime_probe.rs`, `tests/sessions.rs`; validated a declared lobby revision divergence between two custom Godot 4.7.3 sessions; next persist scenario-correlated captures |
 | 2026-09-11 | M09.01 partial | Added opt-in project checkpoint adapters and bounded live collection with session, adapter, wall-clock, process-tick, physics-tick, and duration identity | `src/engine.rs`, `src/runtime_probe.rs`, `src/runtime_probe.gd`, `tests/sessions.rs`; validated named checkpoint dictionaries and combined network collection on custom Godot 4.7.3; next compare participants and persist captures |
 | 2026-09-11 | M06.02, M06.06 | Added `gdkit inspect <session> --net` with fresh generation-scoped multiplayer roots, peers, authority, replication state, connection events, and built-in RPC profiler traffic over bounded typed loopback requests | `src/runtime_probe.rs`, `src/runtime_probe.gd`, `src/debugger_bridge.gd`, `tests/sessions.rs`; validated startup, human/JSON observations, connection and RPC events, stale generations, restart, concurrent sessions, and cleanup on custom Godot 4.7.3 |

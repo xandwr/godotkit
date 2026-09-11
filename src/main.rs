@@ -9,6 +9,7 @@ mod net;
 mod process;
 mod project_files;
 mod runtime_probe;
+mod scenario;
 mod session;
 
 use std::{
@@ -190,6 +191,7 @@ fn main() -> ExitCode {
         Command::Stop(args) => session::stop(args),
         Command::Restart(args) => session::restart(args),
         Command::Inspect(args) => runtime_probe::inspect(args),
+        Command::Scenario(args) => scenario::run(args),
     };
     match result {
         Ok(code) => code,
