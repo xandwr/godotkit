@@ -4,6 +4,7 @@ mod cli;
 mod doctor;
 mod engine;
 mod import_worker;
+mod net;
 mod process;
 mod project_files;
 mod session;
@@ -177,6 +178,7 @@ fn main() -> ExitCode {
         Command::Doctor(args) => doctor::run(args),
         Command::Format(args) => format(args),
         Command::FormatProject(args) => format_project(args),
+        Command::Net(args) => net::run(args),
         Command::SceneTree(args) => scene_tree(args),
         Command::Run(args) => session::run(args),
         Command::Sessions(args) => session::list(args),

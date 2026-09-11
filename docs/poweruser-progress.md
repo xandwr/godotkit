@@ -216,9 +216,11 @@ and source locations with gdview. Scene/resource nodes and reference edges remai
 [Roadmap section 5](poweruser-roadmap.md#5-scene-and-resource-intelligence).
 
 Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: The API command now indexes named
-project script classes, declarations, script inheritance, native base fallback,
-and source locations with gdview. Scene/resource nodes and reference edges remain.
+Blocker: None recorded. Evidence / commits: The API command indexes named project
+script classes, declarations, script inheritance, native base fallback, and source
+locations with gdview. `net` adds a typed source-backed multiplayer topology over
+RPCs, peer lifecycle, autoloads, authority calls, and serialized replication node
+identity. Arbitrary scene properties and general reference edges remain.
 
 - [ ] M07.01 Build typed nodes for scripts, scenes, external/subresources, UIDs,
   native types, script classes, and autoloads using gdview and engine resolution.
@@ -466,6 +468,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-11 | M07.01 partial | Added `gdkit net` with configured-engine RPC metadata and gdview-backed RPC calls, peer construction/assignment, lifecycle, authority, autoload, and text-scene replication topology in human and JSON reports | `src/net.rs`, `src/net.gd`, `src/net_report.rs`, `tests/net.rs`; validated against Pill Poppers on custom Godot 4.7.3; next add arbitrary replication properties through the shared project graph |
 | 2026-09-11 | M05.01-M05.05 partial | Added durable named run sessions with exact generation selectors, combined logs, live status, identity-checked stop, and restart; windowed runs are default and headless is explicit | `src/session.rs`, `tests/sessions.rs`; validated launch, concurrent sessions, duplicate rejection, logs, status, stop, stale stop, restart, and history on custom Godot 4.7.3; next add source/renderer identity and shared supervisor integration |
 | 2026-09-11 | M07.01 partial | Added source-backed named GDScript classes and members to API lookup and search, including project inheritance and native base fallback | `src/api.rs`, `tests/api.rs`; validated with Pill Poppers domain classes on custom Godot 4.7.3; next build reference edges and resource nodes |
 | 2026-09-11 | M08.02-M08.03 partial | Added bounded project-owned script checks and isolated fresh-project execution through the common report and artifact pipeline | `src/check.rs`, `src/report.rs`, `tests/check.rs`; validated against Pill Poppers infrastructure contract on custom Godot 4.7.3; next define named scenario protocol |

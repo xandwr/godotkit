@@ -96,6 +96,27 @@ reflection implementation, project feature settings, enabled extension lists,
 extension descriptors, and their referenced native library metadata. As with
 `check`, `--godot` overrides `GDKIT_GODOT`, which overrides `gdkit.toml`.
 
+`gdkit net [project]` prints the project's authored multiplayer topology without
+entering its main scene. It asks the selected engine for effective GDScript RPC
+configuration, then combines that result with gdview source locations for RPC
+calls, peer construction and assignment, connection lifecycle signals, authority
+and peer-identity checks, networked autoloads, and text-scene
+`MultiplayerSpawner` or `MultiplayerSynchronizer` nodes. Use `--output json` for
+the versioned typed report. Results are observations rather than lint failures;
+dynamic targets and unsupported source surfaces are reported as unknowns.
+
+```text
+gdkit net
+gdkit net game --output json
+gdkit net --godot /path/to/godot
+```
+
+The command currently covers GDScript and `.tscn` files discovered through the
+normal project ignore policy. It reports serialized replication node identity,
+but arbitrary replication properties and live peer state remain future project
+graph and runtime-inspection work. Engine selection follows the same precedence
+as `api` and `check`.
+
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
 Importing can update the project's Godot caches. It exits 1 when Godot reports an

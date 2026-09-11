@@ -25,6 +25,8 @@ pub enum Command {
     Format(FormatArgs),
     #[command(about = "Format every GDScript file in the current Godot project")]
     FormatProject(FormatProjectArgs),
+    #[command(about = "Inspect a Godot project's multiplayer topology")]
+    Net(NetArgs),
     #[command(about = "Print a compact tree for a Godot text scene")]
     SceneTree(SceneTreeArgs),
     #[command(about = "Launch a durable named Godot session")]
@@ -37,6 +39,27 @@ pub enum Command {
     Stop(SessionArgs),
     #[command(about = "Restart a named Godot session")]
     Restart(SessionArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct NetArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Select human or JSON result output"
+    )]
+    pub output: NetOutput,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum NetOutput {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Args)]
