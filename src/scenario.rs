@@ -3,7 +3,6 @@ use std::{
     error::Error,
     fs::{self, OpenOptions},
     io::{self, Write},
-    net::{Ipv4Addr, UdpSocket},
     path::{Path, PathBuf},
     process::ExitCode,
     thread,
@@ -21,17 +20,32 @@ use crate::{
 };
 
 const SCENARIO_SCHEMA_VERSION: u32 = 1;
-type ReservedPorts = (BTreeMap<String, u16>, Vec<UdpSocket>);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ScenarioConfig {
     pub(crate) transport: ScenarioTransport,
     #[serde(default)]
-    ports: BTreeMap<String, u16>,
+    ports: BTreeMap<String, ScenarioPort>,
     #[serde(default = "default_timeout")]
     timeout_seconds: u64,
     participants: Vec<ParticipantConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+enum ScenarioPort {
+    Fixed(u16),
+    Dynamic { checkpoint: String },
+}
+
+impl ScenarioPort {
+    fn launch_value(&self) -> u16 {
+        match self {
+            Self::Fixed(port) => *port,
+            Self::Dynamic { .. } => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -172,8 +186,23 @@ fn validate_config(name: &str, config: &ScenarioConfig) -> Result<(), Box<dyn Er
             .into());
         }
     }
-    for port in config.ports.keys() {
-        validate_component("port", port)?;
+    for (name, port) in &config.ports {
+        validate_component("port", name)?;
+        match port {
+            ScenarioPort::Fixed(0) => {
+                return Err(format!(
+                    "dynamic scenario port '{name}' must declare a checkpoint path"
+                )
+                .into());
+            }
+            ScenarioPort::Dynamic { checkpoint } if !checkpoint.starts_with('/') => {
+                return Err(format!(
+                    "dynamic scenario port '{name}' checkpoint must be a JSON Pointer beginning with '/'"
+                )
+                .into());
+            }
+            ScenarioPort::Fixed(_) | ScenarioPort::Dynamic { .. } => {}
+        }
     }
     let servers = config
         .participants
@@ -197,6 +226,14 @@ fn validate_config(name: &str, config: &ScenarioConfig) -> Result<(), Box<dyn Er
         ScenarioTransport::SteamP2p if servers != 0 => {
             return Err("steam_p2p scenarios cannot declare a dedicated server participant".into());
         }
+        ScenarioTransport::SteamP2p
+            if config
+                .ports
+                .values()
+                .any(|port| matches!(port, ScenarioPort::Dynamic { .. })) =>
+        {
+            return Err("steam_p2p scenarios cannot declare server-bound dynamic ports".into());
+        }
         ScenarioTransport::SteamP2p => {}
     }
     if late_clients == 0 {
@@ -205,18 +242,32 @@ fn validate_config(name: &str, config: &ScenarioConfig) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-fn reserve_ports(requested: &BTreeMap<String, u16>) -> Result<ReservedPorts, Box<dyn Error>> {
-    let mut allocated = BTreeMap::new();
-    let mut listeners = Vec::new();
-    for (name, port) in requested {
-        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, *port)).map_err(|error| {
-            format!("could not reserve scenario port '{name}' ({port}): {error}")
-        })?;
-        let actual = socket.local_addr()?.port();
-        allocated.insert(name.clone(), actual);
-        listeners.push(socket);
+fn launch_ports(config: &BTreeMap<String, ScenarioPort>) -> BTreeMap<String, u16> {
+    config
+        .iter()
+        .map(|(name, port)| (name.clone(), port.launch_value()))
+        .collect()
+}
+
+fn resolve_dynamic_ports(
+    config: &BTreeMap<String, ScenarioPort>,
+    checkpoints: &Value,
+    ports: &mut BTreeMap<String, u16>,
+) -> Result<(), Box<dyn Error>> {
+    for (name, config) in config {
+        let ScenarioPort::Dynamic { checkpoint } = config else {
+            continue;
+        };
+        let port = checkpoints
+            .pointer(checkpoint)
+            .and_then(Value::as_u64)
+            .filter(|port| (1..=u16::MAX.into()).contains(port))
+            .ok_or_else(|| {
+                format!("server checkpoint '{checkpoint}' did not report a valid port for '{name}'")
+            })?;
+        ports.insert(name.clone(), port as u16);
     }
-    Ok((allocated, listeners))
+    Ok(())
 }
 
 fn expand_argument(
@@ -314,7 +365,7 @@ fn wait_ready(
     participant: &ParticipantConfig,
     adapter: &str,
     timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Value, Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
     loop {
         if !session::is_running(record) {
@@ -326,7 +377,7 @@ fn wait_ready(
         }
         let values = crate::runtime_probe::checkpoint_values(record, adapter)?;
         if values.pointer(&participant.readiness.path) == Some(&participant.readiness.equals) {
-            return Ok(());
+            return Ok(values);
         }
         if Instant::now() >= deadline {
             return Err(format!(
@@ -377,14 +428,12 @@ fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
             }
         }
     }
-    let (ports, reservations) = reserve_ports(&scenario.ports)?;
+    let mut ports = launch_ports(&scenario.ports);
     let generation = format!("{:x}-{:x}", timestamp(), std::process::id());
     let run_root = root(&project)
         .join("runs")
         .join(format!("{}-{generation}", args.name));
     fs::create_dir_all(&run_root)?;
-    drop(reservations);
-
     let mut launched = Vec::new();
     let mut run_participants = Vec::new();
     let timeout = Duration::from_secs(scenario.timeout_seconds);
@@ -478,7 +527,16 @@ fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
                     record.name == format!("scenario-{}-{}", args.name, participant.name)
                 })
                 .expect("launched participant");
-            if let Err(error) = wait_ready(record, participant, adapter, timeout) {
+            let checkpoints = match wait_ready(record, participant, adapter, timeout) {
+                Ok(checkpoints) => checkpoints,
+                Err(error) => {
+                    cleanup(&launched);
+                    return Err(error);
+                }
+            };
+            if participant.role == ParticipantRole::Server
+                && let Err(error) = resolve_dynamic_ports(&scenario.ports, &checkpoints, &mut ports)
+            {
                 cleanup(&launched);
                 return Err(error);
             }
@@ -627,7 +685,7 @@ mod tests {
             r#"
 transport = "dedicated_enet"
 timeout_seconds = 10
-ports = { game = 0 }
+ports = { game = { checkpoint = "/network/port" } }
 
 [[participants]]
 name = "server"
@@ -654,7 +712,15 @@ readiness = { path = "/network/connected", equals = true }
         )
         .unwrap();
         validate_config("late_join", &config).unwrap();
-        let ports = BTreeMap::from([("game".into(), 7000)]);
+        let mut ports = launch_ports(&config.ports);
+        assert_eq!(ports["game"], 0);
+        resolve_dynamic_ports(
+            &config.ports,
+            &serde_json::json!({"network": {"port": 7000}}),
+            &mut ports,
+        )
+        .unwrap();
+        assert_eq!(ports["game"], 7000);
         assert_eq!(
             expand_argument(
                 "--connect=127.0.0.1:{port.game}",
@@ -689,5 +755,22 @@ readiness = { path = "/ready", equals = true }
         )
         .unwrap();
         assert!(validate_config("mixed", &steam_with_server).is_err());
+
+        let unreported_dynamic: ScenarioConfig = toml::from_str(
+            r#"
+transport = "dedicated_enet"
+ports = { game = 0 }
+[[participants]]
+name = "server"
+role = "server"
+readiness = { path = "/ready", equals = true }
+[[participants]]
+name = "late"
+role = "late_client"
+readiness = { path = "/ready", equals = true }
+"#,
+        )
+        .unwrap();
+        assert!(validate_config("dynamic", &unreported_dynamic).is_err());
     }
 }

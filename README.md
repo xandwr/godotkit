@@ -371,7 +371,7 @@ roles, launch arguments, and a JSON Pointer readiness condition:
 [scenarios.late_join]
 transport = "dedicated_enet"
 timeout_seconds = 20
-ports = { game = 7000 }
+ports = { game = { checkpoint = "/network_session/port" } }
 
 [[scenarios.late_join.participants]]
 name = "server"
@@ -400,8 +400,11 @@ readiness = { path = "/network_session/connected", equals = true }
 
 Run it with `gdkit scenario start late_join`. The server starts and becomes ready
 first, regular clients start as a group, and late clients start only after all
-regular clients are ready. Port `0` asks the OS to deliberately allocate a free
-port; a nonzero port must be available or startup fails. Arguments may use
+regular clients are ready. Dynamic ports declare the server checkpoint that
+reports the bound port. gdkit passes `0` to the server, waits for readiness,
+reads the OS-selected port from that checkpoint, and only then expands client
+arguments. A fixed nonzero port may use the shorthand
+`ports = { game = 7000 }`. Arguments may use
 `{port.NAME}`, `{participant}`, and `{user_data_dir}`. Every participant receives
 its own user-data roots, durable log, session generation, and the environment
 variables `GDKIT_SCENARIO`, `GDKIT_SCENARIO_PARTICIPANT`,

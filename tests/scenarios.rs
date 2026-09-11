@@ -55,6 +55,7 @@ func collect_checkpoints(tree: SceneTree) -> Dictionary:
 		"network": {
 			"ready": peer != null and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED,
 			"role": OS.get_environment("GDKIT_SCENARIO_ROLE"),
+			"port": peer.get_host().get_local_port() if OS.get_environment("GDKIT_SCENARIO_ROLE") == "server" else 0,
 		}
 	}
 "#,
@@ -71,7 +72,7 @@ checkpoint_adapter = 'res://checkpoints.gd'
 [scenarios.late_join]
 transport = 'dedicated_enet'
 timeout_seconds = 10
-ports = { game = 0 }
+ports = { game = { checkpoint = '/network/port' } }
 
 [[scenarios.late_join.participants]]
 name = 'server'
