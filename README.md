@@ -180,6 +180,12 @@ error or a resource fails to load, and exits 2 for tooling failures such as a
 missing project, invalid configuration, or incompatible engine. This checks
 resource loading, not gameplay execution or a complete C# build.
 
+After import, `check` compares project-owned `class_name` declarations with
+Godot's global script-class cache. A missing class, a class mapped to the wrong
+script, a cache entry whose script was deleted, or an unreadable cache produces
+a targeted diagnostic with the declaration location when available. Run
+`gdkit cache refresh` first; use `gdkit cache rebuild` if the mismatch persists.
+
 Use `gdkit check game --output json` to emit a versioned report on stdout, with
 progress and human diagnostics on stderr. The report includes the outcome,
 engine identity, project content fingerprint, phase coverage, structured

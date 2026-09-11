@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     error::Error,
     ffi::OsStr,
@@ -64,6 +64,132 @@ struct Counts {
     scripts: usize,
     scenes: usize,
     resources: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ScriptClassCacheIssue {
+    message: String,
+    resource: Option<String>,
+    line: Option<u32>,
+}
+
+fn cache_string(line: &str, key: &str) -> Result<Option<String>, String> {
+    let Some(value) = line.trim().strip_prefix(&format!("\"{key}\":")) else {
+        return Ok(None);
+    };
+    let value = value.trim().trim_end_matches(',').trim();
+    let value = value.strip_prefix('&').unwrap_or(value);
+    serde_json::from_str(value)
+        .map(Some)
+        .map_err(|error| format!("invalid {key} entry: {error}"))
+}
+
+fn cached_script_classes(project: &Path) -> Result<Option<HashMap<String, String>>, String> {
+    let path = project.join(".godot/global_script_class_cache.cfg");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not read {}: {error}",
+                crate::engine::display_path(&path)
+            ));
+        }
+    };
+    let mut classes = HashMap::new();
+    let mut class = None;
+    let mut script_path = None;
+    for line in text.lines() {
+        if let Some(value) = cache_string(line, "class")? {
+            class = Some(value);
+        }
+        if let Some(value) = cache_string(line, "path")? {
+            script_path = Some(value);
+        }
+        if line.trim_start().starts_with('}') {
+            match (class.take(), script_path.take()) {
+                (Some(class), Some(path)) if path.ends_with(".gd") => {
+                    classes.insert(class, path);
+                }
+                (Some(_), Some(_)) | (None, None) => {}
+                _ => return Err("incomplete global script class cache entry".into()),
+            }
+        }
+    }
+    if class.is_some() || script_path.is_some() {
+        return Err("incomplete global script class cache entry".into());
+    }
+    Ok(Some(classes))
+}
+
+fn script_class_cache_issues(project: &Path) -> Result<Vec<ScriptClassCacheIssue>, Box<dyn Error>> {
+    let declarations = crate::api::index_project(project)?;
+    if declarations.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cached = match cached_script_classes(project) {
+        Ok(Some(cached)) => cached,
+        Ok(None) => {
+            return Ok(vec![ScriptClassCacheIssue {
+                message: format!(
+                    "Godot's global script class cache is missing; {} project class_name declaration(s) are not registered. Run `gdkit cache refresh`; use `gdkit cache rebuild` if the cache remains missing.",
+                    declarations.len()
+                ),
+                resource: None,
+                line: None,
+            }]);
+        }
+        Err(error) => {
+            return Ok(vec![ScriptClassCacheIssue {
+                message: format!(
+                    "Godot's global script class cache is unreadable: {error}. Run `gdkit cache rebuild` to regenerate it."
+                ),
+                resource: None,
+                line: None,
+            }]);
+        }
+    };
+    let declared: HashMap<_, _> = declarations
+        .iter()
+        .map(|class| (class.name.as_str(), class.path.as_str()))
+        .collect();
+    let mut issues = Vec::new();
+    for class in &declarations {
+        match cached.get(&class.name) {
+            None => issues.push(ScriptClassCacheIssue {
+                message: format!(
+                    "global class {} is declared at {}:{} but is missing from Godot's global script class cache. Run `gdkit cache refresh`; use `gdkit cache rebuild` if the mismatch persists.",
+                    class.name, class.path, class.line
+                ),
+                resource: Some(class.path.clone()),
+                line: u32::try_from(class.line).ok(),
+            }),
+            Some(path) if path != &class.path => issues.push(ScriptClassCacheIssue {
+                message: format!(
+                    "global class {} is declared at {}:{} but Godot's global script class cache maps it to {}. Run `gdkit cache refresh`; use `gdkit cache rebuild` if the mismatch persists.",
+                    class.name, class.path, class.line, path
+                ),
+                resource: Some(class.path.clone()),
+                line: u32::try_from(class.line).ok(),
+            }),
+            Some(_) => {}
+        }
+    }
+    for (class, path) in cached {
+        if !declared.contains_key(class.as_str())
+            && !project.join(path.trim_start_matches("res://")).is_file()
+        {
+            issues.push(ScriptClassCacheIssue {
+                message: format!(
+                    "Godot's global script class cache still maps global class {class} to {path}, but no matching class_name declaration exists on disk. Run `gdkit cache refresh`; use `gdkit cache rebuild` if the stale entry persists."
+                ),
+                resource: Some(path),
+                line: None,
+            });
+        }
+    }
+    issues.sort_by(|left, right| left.message.cmp(&right.message));
+    Ok(issues)
 }
 
 struct TemporaryScript(PathBuf);
@@ -1116,6 +1242,34 @@ fn run_project(
         &paths,
         args.verbose,
     )?;
+    let cache_issues = script_class_cache_issues(project)?;
+    if !cache_issues.is_empty() {
+        eprintln!("\nGlobal script class cache diagnostics:");
+        for issue in &cache_issues {
+            eprintln!("  ERROR: {}", issue.message);
+            report.diagnostics.push(Diagnostic {
+                sequence: sequence_base,
+                phase: phase("import", CheckPhase::Import),
+                severity: DiagnosticSeverity::Error,
+                stream: DiagnosticStream::Logger,
+                engine_code: Some("GDKIT_SCRIPT_CLASS_CACHE".into()),
+                message: issue.message.clone(),
+                resource: issue.resource.clone(),
+                line: issue.line,
+                column: None,
+                stack_frames: Vec::new(),
+                process: None,
+                timestamp_unix_ms: None,
+                occurrence_count: 1,
+            });
+            sequence_base += 1;
+        }
+        report.failures.push(CheckFailure {
+            kind: FailureKind::Diagnostic,
+            phase: Some(phase("import", CheckPhase::Import)),
+            message: "global script class cache does not match project declarations".into(),
+        });
+    }
 
     let harness = TemporaryScript::create(HARNESS.as_bytes(), "gd")?;
     let loading_timer = PhaseTimer::new("resource loading", args.timings);
@@ -1195,7 +1349,7 @@ fn run_project(
             });
         }
     };
-    failed |= check_failed || !result.failures.is_empty();
+    failed |= check_failed || !result.failures.is_empty() || !cache_issues.is_empty();
     for path in &result.failures {
         eprintln!("error: failed to load {path}");
         report.failures.push(CheckFailure {
@@ -1637,6 +1791,95 @@ mod tests {
         assert!(references[0].starts_with("res://project.godot:2:"));
         assert!(references[1].starts_with("res://player.gd:2:"));
         assert!(uid_references(&directory, &[], "uid://absent").is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn diagnoses_missing_mismatched_and_stale_script_class_cache_entries() {
+        let directory =
+            env::temp_dir().join(format!("gdkit-script-classes-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::create_dir(directory.join(".godot")).unwrap();
+        fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+        fs::write(
+            directory.join("good.gd"),
+            "class_name GoodClass extends RefCounted\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.join("missing.gd"),
+            "class_name MissingClass extends RefCounted\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.join("moved.gd"),
+            "class_name MovedClass extends RefCounted\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.join(".ignored.gd"),
+            "class_name IgnoredClass extends RefCounted\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.join(".godot/global_script_class_cache.cfg"),
+            concat!(
+                "list=[{\n\"class\": &\"GoodClass\",\n\"path\": \"res://good.gd\"\n}, {\n",
+                "\"class\": &\"MovedClass\",\n\"path\": \"res://old.gd\"\n}, {\n",
+                "\"class\": &\"StaleClass\",\n\"path\": \"res://stale.gd\"\n}, {\n",
+                "\"class\": &\"IgnoredClass\",\n\"path\": \"res://.ignored.gd\"\n}]\n",
+            ),
+        )
+        .unwrap();
+
+        let issues = script_class_cache_issues(&directory).unwrap();
+        assert_eq!(issues.len(), 3, "{issues:#?}");
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("MissingClass")
+                    && issue.message.contains("is missing"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("MovedClass")
+                    && issue.message.contains("res://old.gd"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("StaleClass")
+                    && issue.message.contains("no matching class_name"))
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn distinguishes_missing_and_malformed_script_class_caches() {
+        let directory =
+            env::temp_dir().join(format!("gdkit-script-cache-state-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+        fs::write(
+            directory.join("actor.gd"),
+            "class_name CacheActor extends RefCounted\n",
+        )
+        .unwrap();
+
+        let missing = script_class_cache_issues(&directory).unwrap();
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].message.contains("cache is missing"));
+
+        fs::create_dir(directory.join(".godot")).unwrap();
+        fs::write(
+            directory.join(".godot/global_script_class_cache.cfg"),
+            "list=[{\n\"class\": nope,\n\"path\": \"res://actor.gd\"\n}]\n",
+        )
+        .unwrap();
+        let malformed = script_class_cache_issues(&directory).unwrap();
+        assert_eq!(malformed.len(), 1);
+        assert!(malformed[0].message.contains("cache is unreadable"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -36,11 +36,11 @@ struct ProjectMember {
     line: usize,
 }
 
-struct ProjectClass {
-    name: String,
+pub(crate) struct ProjectClass {
+    pub(crate) name: String,
     base: String,
-    path: String,
-    line: usize,
+    pub(crate) path: String,
+    pub(crate) line: usize,
     members: Vec<ProjectMember>,
 }
 
@@ -360,7 +360,7 @@ fn project_path(project: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
     ))
 }
 
-fn index_project(project: &Path) -> Result<Vec<ProjectClass>, Box<dyn Error>> {
+pub(crate) fn index_project(project: &Path) -> Result<Vec<ProjectClass>, Box<dyn Error>> {
     let mut classes = Vec::new();
     for path in project_files::collect(project, &["gd"])? {
         let source = fs::read_to_string(&path)?;
