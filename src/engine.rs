@@ -25,12 +25,14 @@ pub(crate) struct Config {
 #[serde(deny_unknown_fields)]
 pub(crate) struct CheckConfig {
     #[serde(default)]
+    pub(crate) strict_methods: bool,
+    #[serde(default)]
     pub(crate) ignore_import_errors: Vec<ImportError>,
 }
 
 impl CheckConfig {
     fn is_empty(&self) -> bool {
-        self.ignore_import_errors.is_empty()
+        !self.strict_methods && self.ignore_import_errors.is_empty()
     }
 }
 

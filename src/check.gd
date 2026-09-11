@@ -11,9 +11,17 @@ const RESOURCE_KINDS := {
 }
 
 
+func _init() -> void:
+	var arguments := OS.get_cmdline_user_args()
+	if arguments.size() == 2 and arguments[1] == "strict-methods":
+		ProjectSettings.set_setting("debug/gdscript/warnings/enable", true)
+		ProjectSettings.set_setting("debug/gdscript/warnings/unsafe_method_access", 2)
+		ProjectSettings.emit_signal("settings_changed")
+
+
 func _initialize() -> void:
 	var arguments := OS.get_cmdline_user_args()
-	if arguments.size() != 1:
+	if arguments.size() < 1 or arguments.size() > 2:
 		push_error("Expected a resource manifest path")
 		quit(2)
 		return

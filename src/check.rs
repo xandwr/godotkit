@@ -5,8 +5,8 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    process::{Command, ExitCode, Output},
-    time::Instant,
+    process::{Command, ExitCode, Output, Stdio},
+    time::{Duration, Instant},
 };
 
 use serde::Deserialize;
@@ -97,6 +97,53 @@ fn engine_output(engine: &Path, project: &Path, args: &[&OsStr]) -> io::Result<O
         .arg(project)
         .args(args)
         .output()
+}
+
+fn smoke_output(
+    engine: &Path,
+    project: &Path,
+    scene: &Path,
+    frames: u32,
+    timeout: u64,
+) -> io::Result<(Output, bool)> {
+    let stdout = TemporaryScript::create(&[], "stdout")?;
+    let stderr = TemporaryScript::create(&[], "stderr")?;
+    let mut child = Command::new(engine)
+        .args(["--headless", "--no-header", "--path"])
+        .arg(project)
+        .arg(scene)
+        .arg("--quit-after")
+        .arg(frames.to_string())
+        .stdout(Stdio::from(OpenOptions::new().write(true).open(&stdout.0)?))
+        .stderr(Stdio::from(OpenOptions::new().write(true).open(&stderr.0)?))
+        .spawn()?;
+    let start = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if start.elapsed() >= Duration::from_secs(timeout) {
+            timed_out = true;
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    .output();
+            }
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok((
+        Output {
+            status,
+            stdout: fs::read(&stdout.0)?,
+            stderr: fs::read(&stderr.0)?,
+        },
+        timed_out,
+    ))
 }
 
 pub(crate) fn has_errors(output: &Output) -> bool {
@@ -368,7 +415,29 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         println!("import worker stopped");
         return Ok(ExitCode::SUCCESS);
     }
+    let scenes = args
+        .scene
+        .iter()
+        .map(|scene| {
+            let path = project.join(scene.strip_prefix("res://").unwrap_or(scene));
+            let path = fs::canonicalize(&path)
+                .map_err(|error| format!("smoke scene {}: {error}", path.display()))?;
+            if !path.starts_with(fs::canonicalize(&project)?)
+                || !path.is_file()
+                || !path
+                    .extension()
+                    .is_some_and(|extension| extension == "tscn" || extension == "scn")
+            {
+                return Err("smoke scenes must be .tscn or .scn files inside the project".into());
+            }
+            Ok(path)
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
     let config = crate::engine::read_config(&project)?;
+    let strict_methods = args.strict_methods
+        || config
+            .as_ref()
+            .is_some_and(|config| config.check.strict_methods);
     let rules = config.as_ref().map_or(&[][..], |config| {
         config.check.ignore_import_errors.as_slice()
     });
@@ -459,6 +528,11 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
             harness.0.as_os_str(),
             OsStr::new("--"),
             manifest.0.as_os_str(),
+            OsStr::new(if strict_methods {
+                "strict-methods"
+            } else {
+                "project-policy"
+            }),
         ],
     )?;
     drop(loading_timer);
@@ -478,7 +552,36 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         eprintln!("error: failed to load {path}");
     }
 
+    let mut smoke_count = 0;
+    if !failed {
+        for scene in &scenes {
+            let phase = format!("Scene smoke {}", scene.display());
+            let (output, timed_out) = smoke_output(
+                &engine,
+                &project,
+                scene,
+                args.smoke_frames,
+                args.smoke_timeout,
+            )?;
+            write_diagnostics(&output, &phase, &project, &paths, args.verbose)?;
+            if timed_out {
+                eprintln!("error: {phase} exceeded {} seconds", args.smoke_timeout);
+            }
+            failed |= timed_out || !output.status.success() || has_errors(&output);
+            smoke_count += 1;
+        }
+    } else if !scenes.is_empty() {
+        eprintln!("Scene smoke checks skipped because resource validation failed.");
+    }
     print_summary(failed, Some(&result.counts))?;
+    eprintln!(
+        "coverage: resource loading{}; {smoke_count} scene smoke checks executed",
+        if strict_methods {
+            " and strict method validation"
+        } else {
+            " (project warning policy)"
+        }
+    );
     Ok(if failed {
         ExitCode::from(1)
     } else {

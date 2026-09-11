@@ -66,6 +66,49 @@ error or a resource fails to load, and exits 2 for tooling failures such as a
 missing project, invalid configuration, or incompatible engine. This checks
 resource loading, not gameplay execution or a complete C# build.
 
+Use `gdkit check game --strict-methods` to reject calls whose methods are not
+guaranteed by the receiver's declared or inferred type, including calls in code
+that never executes. To enable this for every check, set:
+
+```toml
+[check]
+strict_methods = true
+```
+
+This enables Godot's `unsafe_method_access` diagnostic as an error in the fresh
+resource-checking process, before autoloads and their dependencies load. It does
+not edit `project.godot` or change the import worker's warning policy. Project
+warning directory exclusions and explicit `@warning_ignore("unsafe_method_access")`
+annotations still apply. Put a targeted annotation immediately before the call.
+Other warning severities retain the project's policy, although the warning system
+is enabled for strict checking even if the project disabled it globally.
+
+A base-typed object can have a script or subclass with additional methods, so
+strict checking can reject intentional dynamic calls too. Give the receiver its
+actual custom type or explicitly suppress the diagnostic at the intentional call.
+This is engine semantic validation, not a guarantee of runtime correctness.
+Ordinary checks continue to use the project's warning policy. The coverage line
+states which policy was checked and whether gameplay scenes were entered.
+
+Use `gdkit check game --scene res://scenes/match_lobby/match_lobby.tscn` to
+add a headless runtime smoke check after resource validation succeeds. Repeat
+`--scene` for multiple scenes. Paths resolve relative to the project and must
+identify a scene inside it. Each scene starts in a fresh game process with the
+project's autoloads and normal runtime warning policy. This executes gameplay,
+including `_ready()`, and can perform whatever I/O the project normally performs.
+Use a project-owned fixture scene when a lobby needs identity or network setup.
+
+`--smoke-frames 2` sets the number of process iterations before Godot quits
+(default 2). `--smoke-timeout 30` sets the wall-clock limit in seconds per scene
+(default 30, maximum 3600), including startup. A timeout, unsuccessful exit, or
+`ERROR:` / `SCRIPT ERROR:` on either stream fails the check, even when Godot
+otherwise exits 0. On Windows the timeout terminates the launched process tree,
+including the console launcher's engine process. Output is captured to temporary
+files so a verbose or blocked scene cannot fill a pipe and deadlock the runner.
+The frame budget only covers startup; smoke success does not validate later
+interactions, multiplayer behavior, or rendering correctness. Resource-validation
+failures skip scene execution, and the coverage line reports the number run.
+
 By default, the import editor stays alive for five minutes after its last request.
 Subsequent checks ask it to scan again and update changed script classes, avoiding
 editor startup after ordinary script edits. Every check still loads all selected

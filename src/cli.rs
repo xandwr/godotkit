@@ -35,6 +35,18 @@ pub struct InitArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckArgs {
+    #[arg(long, help = "Reject method calls not guaranteed by the receiver type")]
+    pub strict_methods: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Smoke-test this scene after validation (repeatable; executes gameplay)"
+    )]
+    pub scene: Vec<String>,
+    #[arg(long, requires = "scene", default_value = "2", value_parser = clap::value_parser!(u32).range(1..), help = "Process frames per smoke scene")]
+    pub smoke_frames: u32,
+    #[arg(long, requires = "scene", default_value = "30", value_parser = clap::value_parser!(u64).range(1..=3600), help = "Wall-clock seconds allowed per smoke scene")]
+    pub smoke_timeout: u64,
     #[arg(default_value = ".", help = "Godot project directory")]
     pub project: PathBuf,
     #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
@@ -54,6 +66,7 @@ pub struct CheckArgs {
     #[arg(
         long,
         conflicts_with = "fresh",
+        conflicts_with_all = ["scene", "strict_methods", "smoke_frames", "smoke_timeout"],
         help = "Stop this project's background import editor without checking"
     )]
     pub stop_worker: bool,
