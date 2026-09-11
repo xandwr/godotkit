@@ -11,7 +11,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    #[command(about = "Query the configured engine's native API")]
+    #[command(about = "Query the configured engine and project's API")]
     Api(ApiArgs),
     #[command(about = "Print autoload initialization order")]
     Autoloads(AutoloadsArgs),
@@ -31,7 +31,10 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct ApiArgs {
-    #[arg(value_name = "CLASS|search", help = "Native class name, or search")]
+    #[arg(
+        value_name = "CLASS|search",
+        help = "Native or project class name, or search"
+    )]
     pub query: String,
     #[arg(value_name = "MEMBER|TERM", help = "Member name, or search term")]
     pub member: Option<String>,

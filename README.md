@@ -73,8 +73,16 @@ Class queries print signatures, properties, signals, enum values, constants, and
 the full inherited surface with each inherited member's declaring class. Member
 queries walk that same inheritance chain and suggest nearby names for typos.
 `gdkit api search <term>` searches class and member names across the native API.
-Negative queries exit 1 and explicitly leave open the possibility of members
-added by scripts or subclasses.
+
+Project scripts declaring `class_name` participate in the same lookup. Class
+queries show their declared methods, properties, signals, enums, constants,
+script inheritance, and `res://` source locations. Member queries follow project
+base classes and then the configured engine's native base class. API search
+combines native and project results. This source index uses gdview's syntax tree,
+respects the normal project file-discovery policy, and does not execute project
+scripts.
+Negative queries exit 1. Anonymous scripts, inner classes, computed members, and
+runtime state remain outside this static project index.
 
 Every result identifies the actual engine executable and version. The index runs
 inside the selected project so registered GDExtension classes are included, but

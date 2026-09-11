@@ -9,10 +9,40 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use gdview::syntax::{
+    SyntaxKind as K,
+    ast::{AstNode, Function},
+    parse,
+};
+
 use crate::{cli::ApiArgs, engine, project_files};
 
 const RESULT_PREFIX: &str = "GDKIT_API_RESULT:";
 const SEARCH_LIMIT: usize = 50;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProjectMemberKind {
+    Method,
+    Property,
+    Signal,
+    Enum,
+    Constant,
+}
+
+struct ProjectMember {
+    kind: ProjectMemberKind,
+    name: String,
+    signature: String,
+    line: usize,
+}
+
+struct ProjectClass {
+    name: String,
+    base: String,
+    path: String,
+    line: usize,
+    members: Vec<ProjectMember>,
+}
 
 #[derive(Deserialize, Serialize)]
 struct ApiIndex {
@@ -250,6 +280,210 @@ fn load_index(engine_path: &Path, project: &Path) -> Result<ApiIndex, Box<dyn Er
     Ok(cached.index)
 }
 
+fn compact_declaration(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn declaration_name(node: gdview::syntax::Node<'_>) -> Option<String> {
+    node.children()
+        .find(|child| child.kind() == K::Name)
+        .map(|name| name.text().trim().to_owned())
+}
+
+fn source_line(source: &str, offset: usize) -> usize {
+    source[..offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
+}
+
+fn declaration_line(source: &str, node: gdview::syntax::Node<'_>) -> usize {
+    let offset = node
+        .tokens()
+        .find(|token| !token.kind.is_trivia() && !token.kind.is_synthetic_layout())
+        .map_or(node.range().start, |token| token.range.start);
+    source_line(source, offset)
+}
+
+fn function_signature(function: Function<'_>) -> String {
+    let syntax = function.syntax();
+    let end = function
+        .body()
+        .map_or(syntax.range().end, |body| body.syntax().range().start);
+    compact_declaration(
+        syntax.text()[..end - syntax.range().start].trim_end_matches([':', ' ', '\t', '\r', '\n']),
+    )
+}
+
+fn variable_signature(node: gdview::syntax::Node<'_>) -> String {
+    let cutoff = node
+        .tokens()
+        .find(|token| matches!(token.kind, K::Eq | K::ColonEq))
+        .map_or(node.range().end, |token| token.range.start);
+    compact_declaration(&node.text()[..cutoff - node.range().start])
+}
+
+fn class_identity(node: gdview::syntax::Node<'_>) -> Option<(String, String)> {
+    let name = declaration_name(node)?;
+    Some((name, extends_base(node)))
+}
+
+fn extends_base(node: gdview::syntax::Node<'_>) -> String {
+    let mut extends = false;
+    let mut base = String::new();
+    for token in node
+        .tokens()
+        .filter(|token| !token.kind.is_trivia() && !token.kind.is_synthetic_layout())
+    {
+        if token.kind == K::ExtendsKw {
+            extends = true;
+            continue;
+        }
+        if extends {
+            base.push_str(
+                &node.text()
+                    [token.range.start - node.range().start..token.range.end - node.range().start],
+            );
+        }
+    }
+    base
+}
+
+fn project_path(project: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
+    Ok(format!(
+        "res://{}",
+        path.strip_prefix(project)?
+            .to_str()
+            .ok_or("script path is not valid UTF-8")?
+            .replace('\\', "/")
+    ))
+}
+
+fn index_project(project: &Path) -> Result<Vec<ProjectClass>, Box<dyn Error>> {
+    let mut classes = Vec::new();
+    for path in project_files::collect(project, &["gd"])? {
+        let source = fs::read_to_string(&path)?;
+        let parsed = parse(&source);
+        let root = parsed.root();
+        let Some(class_node) = root.children().find(|node| node.kind() == K::ClassNameDecl) else {
+            continue;
+        };
+        let Some((name, mut base)) = class_identity(class_node) else {
+            continue;
+        };
+        if base.is_empty()
+            && let Some(extends) = root.children().find(|node| node.kind() == K::ExtendsClause)
+        {
+            base = extends_base(extends);
+        }
+        let mut annotations = Vec::new();
+        let mut members = Vec::new();
+        for node in root.children() {
+            if node.kind() == K::Annotation {
+                annotations.push(compact_declaration(node.text()));
+                continue;
+            }
+            let member = match node.kind() {
+                K::FuncDecl => {
+                    let Some(function) = Function::cast(node) else {
+                        continue;
+                    };
+                    let Some(name) = function.name() else {
+                        continue;
+                    };
+                    Some((
+                        ProjectMemberKind::Method,
+                        name.to_owned(),
+                        function_signature(function),
+                    ))
+                }
+                K::VarDecl => declaration_name(node)
+                    .map(|name| (ProjectMemberKind::Property, name, variable_signature(node))),
+                K::SignalDecl => declaration_name(node).map(|name| {
+                    (
+                        ProjectMemberKind::Signal,
+                        name,
+                        compact_declaration(node.text()),
+                    )
+                }),
+                K::EnumDecl => declaration_name(node).map(|name| {
+                    (
+                        ProjectMemberKind::Enum,
+                        name,
+                        compact_declaration(node.text()),
+                    )
+                }),
+                K::ConstDecl => declaration_name(node).map(|name| {
+                    (
+                        ProjectMemberKind::Constant,
+                        name,
+                        compact_declaration(node.text()),
+                    )
+                }),
+                _ => None,
+            };
+            if let Some((kind, name, mut signature)) = member {
+                if !annotations.is_empty() {
+                    signature = format!("{} {signature}", annotations.join(" "));
+                }
+                members.push(ProjectMember {
+                    kind,
+                    name,
+                    signature,
+                    line: declaration_line(&source, node),
+                });
+            }
+            annotations.clear();
+        }
+        classes.push(ProjectClass {
+            name,
+            base,
+            path: project_path(project, &path)?,
+            line: declaration_line(&source, class_node),
+            members,
+        });
+    }
+    classes.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(classes)
+}
+
+fn find_project_class<'a>(classes: &'a [ProjectClass], name: &str) -> Option<&'a ProjectClass> {
+    classes
+        .iter()
+        .find(|class| class.name.eq_ignore_ascii_case(name))
+}
+
+fn find_project_base<'a>(classes: &'a [ProjectClass], base: &str) -> Option<&'a ProjectClass> {
+    find_project_class(classes, base).or_else(|| {
+        let path = base.trim_matches(['"', '\'']);
+        classes.iter().find(|class| class.path == path)
+    })
+}
+
+fn project_lineage<'a>(
+    classes: &'a [ProjectClass],
+    class: &'a ProjectClass,
+) -> Vec<&'a ProjectClass> {
+    let mut result = vec![class];
+    let mut base = class.base.as_str();
+    let mut seen = HashSet::from([class.name.as_str()]);
+    while let Some(parent) = find_project_base(classes, base) {
+        if !seen.insert(parent.name.as_str()) {
+            break;
+        }
+        result.push(parent);
+        base = parent.base.as_str();
+    }
+    result
+}
+
+fn native_base<'a>(index: &'a ApiIndex, chain: &[&ProjectClass]) -> Option<&'a ApiClass> {
+    chain
+        .last()
+        .and_then(|class| find_class(index, &class.base))
+}
+
 fn type_name(value: &ApiType, return_type: bool) -> String {
     if !value.class_name.is_empty() {
         return value.class_name.clone();
@@ -475,6 +709,129 @@ fn print_class(index: &ApiIndex, engine_path: &Path, class: &ApiClass) {
     }
 }
 
+fn project_inheritance_text(chain: &[&ProjectClass]) -> String {
+    let mut names = chain
+        .iter()
+        .map(|class| class.name.as_str())
+        .collect::<Vec<_>>();
+    if let Some(base) = chain
+        .last()
+        .map(|class| class.base.as_str())
+        .filter(|base| !base.is_empty())
+    {
+        names.push(base);
+    }
+    names.join(" < ")
+}
+
+fn project_member_suffix(
+    owner: &ProjectClass,
+    requested: &ProjectClass,
+    member: &ProjectMember,
+) -> String {
+    if owner.name == requested.name {
+        format!(" [{}:{}]", owner.path, member.line)
+    } else {
+        format!(" [from {}, {}:{}]", owner.name, owner.path, member.line)
+    }
+}
+
+fn print_project_class(
+    index: &ApiIndex,
+    engine_path: &Path,
+    classes: &[ProjectClass],
+    class: &ProjectClass,
+) {
+    let chain = project_lineage(classes, class);
+    engine_header(index, engine_path);
+    println!("\nProject class {}", project_inheritance_text(&chain));
+    println!("Source: {}:{}", class.path, class.line);
+    for (heading, kind) in [
+        ("Methods", ProjectMemberKind::Method),
+        ("Properties", ProjectMemberKind::Property),
+        ("Signals", ProjectMemberKind::Signal),
+        ("Enums", ProjectMemberKind::Enum),
+        ("Constants", ProjectMemberKind::Constant),
+    ] {
+        println!("\n{heading}:");
+        for owner in &chain {
+            for member in owner.members.iter().filter(|member| member.kind == kind) {
+                println!(
+                    "  {}{}",
+                    member.signature,
+                    project_member_suffix(owner, class, member)
+                );
+            }
+        }
+    }
+    if let Some(base) = native_base(index, &chain) {
+        println!("\nNative base: {}", base.name);
+    } else if let Some(base) = chain
+        .last()
+        .map(|owner| owner.base.as_str())
+        .filter(|base| !base.is_empty())
+    {
+        println!("\nUnresolved base: {base}");
+    }
+}
+
+fn print_project_member(
+    index: &ApiIndex,
+    engine_path: &Path,
+    classes: &[ProjectClass],
+    class: &ProjectClass,
+    member_name: &str,
+) -> ExitCode {
+    let chain = project_lineage(classes, class);
+    engine_header(index, engine_path);
+    println!("\nProject class {}", project_inheritance_text(&chain));
+    let mut found = false;
+    for owner in &chain {
+        for member in owner
+            .members
+            .iter()
+            .filter(|member| member.name.eq_ignore_ascii_case(member_name))
+        {
+            println!(
+                "\n{}{}",
+                member.signature,
+                project_member_suffix(owner, class, member)
+            );
+            found = true;
+        }
+    }
+    if let Some(base) = native_base(index, &chain) {
+        for line in member_lines(index, base, member_name) {
+            println!("\n{line} [native base {}]", base.name);
+            found = true;
+        }
+    }
+    if found {
+        return ExitCode::SUCCESS;
+    }
+    println!("\nNo member named '{member_name}' on {}.", class.name);
+    let project_names = chain
+        .iter()
+        .flat_map(|owner| owner.members.iter().map(|member| member.name.as_str()));
+    let native_names = native_base(index, &chain).into_iter().flat_map(|base| {
+        lineage(index, base).into_iter().flat_map(|owner| {
+            owner
+                .methods
+                .iter()
+                .map(|member| member.name.as_str())
+                .chain(owner.properties.iter().map(|member| member.name.as_str()))
+                .chain(owner.signals.iter().map(|member| member.name.as_str()))
+                .chain(owner.enums.iter().map(|member| member.name.as_str()))
+                .chain(owner.constants.iter().map(|member| member.name.as_str()))
+        })
+    });
+    let nearby = suggestions(project_names.chain(native_names), member_name);
+    if !nearby.is_empty() {
+        println!("Did you mean: {}?", nearby.join(", "));
+    }
+    ExitCode::from(1)
+}
+
 fn member_lines(index: &ApiIndex, class: &ApiClass, member: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for owner in lineage(index, class) {
@@ -590,7 +947,11 @@ fn print_member(index: &ApiIndex, engine_path: &Path, class: &ApiClass, member: 
     ExitCode::from(1)
 }
 
-fn search_lines(index: &ApiIndex, term: &str) -> Vec<(u8, String)> {
+fn search_lines(
+    index: &ApiIndex,
+    project_classes: &[ProjectClass],
+    term: &str,
+) -> Vec<(u8, String)> {
     let needle = term.to_ascii_lowercase();
     let score = |name: &str| {
         let name = name.to_ascii_lowercase();
@@ -605,6 +966,33 @@ fn search_lines(index: &ApiIndex, term: &str) -> Vec<(u8, String)> {
         }
     };
     let mut lines = Vec::new();
+    for class in project_classes {
+        if let Some(score) = score(&class.name) {
+            let base = if class.base.is_empty() {
+                String::new()
+            } else {
+                format!(" < {}", class.base)
+            };
+            lines.push((
+                score,
+                format!(
+                    "project class {}{} [{}:{}]",
+                    class.name, base, class.path, class.line
+                ),
+            ));
+        }
+        for member in &class.members {
+            if let Some(score) = score(&member.name) {
+                lines.push((
+                    score,
+                    format!(
+                        "{}.{} [{}:{}]",
+                        class.name, member.signature, class.path, member.line
+                    ),
+                ));
+            }
+        }
+    }
     for class in &index.classes {
         if let Some(score) = score(&class.name) {
             let parent = if class.parent.is_empty() {
@@ -675,10 +1063,15 @@ fn search_lines(index: &ApiIndex, term: &str) -> Vec<(u8, String)> {
     lines
 }
 
-fn print_search(index: &ApiIndex, engine_path: &Path, term: &str) -> ExitCode {
+fn print_search(
+    index: &ApiIndex,
+    engine_path: &Path,
+    project_classes: &[ProjectClass],
+    term: &str,
+) -> ExitCode {
     engine_header(index, engine_path);
-    let lines = search_lines(index, term);
-    println!("\nNative API search for '{term}':");
+    let lines = search_lines(index, project_classes, term);
+    println!("\nAPI search for '{term}':");
     if lines.is_empty() {
         println!("  no matches");
         let nearby = suggestions(index.classes.iter().map(|class| class.name.as_str()), term);
@@ -703,15 +1096,31 @@ pub(crate) fn run(args: ApiArgs) -> Result<ExitCode, Box<dyn Error>> {
     let project = engine::project_root(&args.project)?;
     let engine_path = engine::resolve(&project, args.godot.as_deref())?;
     let index = load_index(&engine_path, &project)?;
+    let project_classes = index_project(&project)?;
     if args.query == "search" {
         let term = args.member.as_deref().unwrap();
-        return Ok(print_search(&index, &engine_path, term));
+        return Ok(print_search(&index, &engine_path, &project_classes, term));
+    }
+    if let Some(class) = find_project_class(&project_classes, &args.query) {
+        return Ok(match args.member.as_deref() {
+            Some(member) => {
+                print_project_member(&index, &engine_path, &project_classes, class, member)
+            }
+            None => {
+                print_project_class(&index, &engine_path, &project_classes, class);
+                ExitCode::SUCCESS
+            }
+        });
     }
     let Some(class) = find_class(&index, &args.query) else {
         engine_header(&index, &engine_path);
-        println!("\nNo native class named '{}'.", args.query);
+        println!("\nNo native or project class named '{}'.", args.query);
         let nearby = suggestions(
-            index.classes.iter().map(|class| class.name.as_str()),
+            index
+                .classes
+                .iter()
+                .map(|class| class.name.as_str())
+                .chain(project_classes.iter().map(|class| class.name.as_str())),
             &args.query,
         );
         if !nearby.is_empty() {
@@ -800,6 +1209,49 @@ mod tests {
         fs::write(&library, "second version").unwrap();
         let after = project_extension_fingerprint(&directory).unwrap();
         assert_ne!(before, after);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn indexes_project_classes_members_inheritance_and_locations() {
+        let directory =
+            std::env::temp_dir().join(format!("gdkit-project-api-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+        fs::write(
+            directory.join("base.gd"),
+            "class_name DomainBase\nextends RefCounted\n\nsignal changed(value: int)\nvar value: int = 1\nconst LIMIT := 4\nenum Mode { FIRST, SECOND = 2 }\n\nfunc compute(input: int) -> int:\n\treturn input\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.join("derived.gd"),
+            "@tool\nclass_name DomainChild extends DomainBase\n\n@rpc(\"authority\")\nfunc apply(peer: int = 1) -> bool:\n\treturn peer > 0\n",
+        )
+        .unwrap();
+
+        let classes = index_project(&directory).unwrap();
+        let child = find_project_class(&classes, "domainchild").unwrap();
+        assert_eq!(child.base, "DomainBase");
+        assert_eq!(child.path, "res://derived.gd");
+        assert_eq!(child.line, 2);
+        assert_eq!(project_lineage(&classes, child).len(), 2);
+        assert_eq!(child.members.len(), 1);
+        assert_eq!(child.members[0].name, "apply");
+        assert_eq!(child.members[0].line, 5);
+        assert_eq!(
+            child.members[0].signature,
+            "@rpc(\"authority\") func apply(peer: int = 1) -> bool"
+        );
+        let base = find_project_class(&classes, "DomainBase").unwrap();
+        assert!(base.members.iter().any(|member| {
+            member.kind == ProjectMemberKind::Property
+                && member.signature == "var value: int"
+                && member.line == 5
+        }));
+        assert!(base.members.iter().any(|member| {
+            member.kind == ProjectMemberKind::Method
+                && member.signature == "func compute(input: int) -> int"
+        }));
         fs::remove_dir_all(directory).unwrap();
     }
 }

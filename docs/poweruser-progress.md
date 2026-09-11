@@ -42,7 +42,7 @@ independent design work can proceed before prerequisite implementations finish.
 | 4 | [M04 Native API lookup](#m04-native-api-lookup) | P1 | In progress | M02, M03 identity/capabilities | Correct inherited signatures on official/custom engines |
 | 5 | [M05 Named sessions](#m05-named-sessions) | P1 | Planned | M01, M02 | Launch, logs, status, stop, restart, stale-session rejection |
 | 6 | [M06 Runtime probe](#m06-runtime-probe) | P1 | Planned | M03, M05 | Fresh observations and verified startup coverage |
-| 7 | [M07 Project graph](#m07-project-graph) | P1 | Planned | M01, engine identity, gdview | Source-backed references, UIDs, inheritance, overrides |
+| 7 | [M07 Project graph](#m07-project-graph) | P1 | In progress | M01, engine identity, gdview | Source-backed references, UIDs, inheritance, overrides |
 | 8 | [M08 Scenario protocol](#m08-scenario-protocol) | P2 | In progress | M01, M02, M05; G1 for bridge use | Signal readiness, bounded assertions, failure artifacts |
 | 9 | [M09 Multiplayer scenarios](#m09-multiplayer-scenarios) | P2 | Planned | M08 | Server, two clients, late join, isolated state, cleanup |
 | 10 | [M10 Performance and visuals](#m10-performance-and-visuals) | P2 | Planned | M08, selected G1 adapters | Comparable captures with environment metadata |
@@ -190,8 +190,10 @@ source project's imported state. Named protocol messages and readiness remain.
 
 [Roadmap section 4](poweruser-roadmap.md#4-named-runtime-sessions).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: The API command now indexes named
+project script classes, declarations, script inheritance, native base fallback,
+and source locations with gdview. Scene/resource nodes and reference edges remain.
 
 - [ ] M06.01 Spike read-only `inspect`: live tree, selected properties, autoload state,
   script errors, and source locations.
@@ -460,6 +462,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-11 | M07.01 partial | Added source-backed named GDScript classes and members to API lookup and search, including project inheritance and native base fallback | `src/api.rs`, `tests/api.rs`; validated with Pill Poppers domain classes on custom Godot 4.7.3; next build reference edges and resource nodes |
 | 2026-09-11 | M08.02-M08.03 partial | Added bounded project-owned script checks and isolated fresh-project execution through the common report and artifact pipeline | `src/check.rs`, `src/report.rs`, `tests/check.rs`; validated against Pill Poppers infrastructure contract on custom Godot 4.7.3; next define named scenario protocol |
 | 2026-09-10 | M01.03-M01.07 partial | Added final JSON check reports and persisted report artifacts with populated diagnostics, phase coverage, fingerprints, suppression counts, and exit-code outcomes | `src/check.rs`, `src/report.rs`, `tests/check.rs`; unit and local Godot validation; next migrate worker capture and add live stdout events |
 | 2026-09-10 | M01.03, M02.01-M02.02 partial | Added shared live stdout/stderr capture with observed ordering, timestamps, process identity, exact stream reconstruction, and deadlines; migrated fresh import, resource loading, and smoke processes | `src/process.rs`, `src/check.rs`; populate reports from captured events and migrate probe/worker lifecycle paths |

@@ -11,6 +11,11 @@ fn queries_inherited_native_api_and_suggests_typo_fixes() {
         "config_version=5\n[application]\nconfig/name=\"gdkit api test\"\n",
     )
     .unwrap();
+    fs::write(
+        directory.join("domain.gd"),
+        "class_name MatchState extends RefCounted\n\nsignal changed(peer_id: int)\nvar owner_peer_id: int = 0\n\nfunc serialize() -> Dictionary:\n\treturn {}\n",
+    )
+    .unwrap();
     let run = |arguments: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_gdkit"))
             .current_dir(&directory)
@@ -58,6 +63,29 @@ fn queries_inherited_native_api_and_suggests_typo_fixes() {
         String::from_utf8(typo.stdout)
             .unwrap()
             .contains("Did you mean: move_and_slide")
+    );
+
+    let project_class = run(&["MatchState"]);
+    assert!(project_class.status.success());
+    let project_class = String::from_utf8(project_class.stdout).unwrap();
+    assert!(project_class.contains("Project class MatchState < RefCounted"));
+    assert!(project_class.contains("func serialize() -> Dictionary [res://domain.gd:6]"));
+    assert!(project_class.contains("signal changed(peer_id: int) [res://domain.gd:3]"));
+
+    let project_member = run(&["MatchState", "serialize"]);
+    assert!(project_member.status.success());
+    assert!(
+        String::from_utf8(project_member.stdout)
+            .unwrap()
+            .contains("func serialize() -> Dictionary [res://domain.gd:6]")
+    );
+
+    let project_search = run(&["search", "serialize"]);
+    assert!(project_search.status.success());
+    assert!(
+        String::from_utf8(project_search.stdout)
+            .unwrap()
+            .contains("MatchState.func serialize() -> Dictionary [res://domain.gd:6]")
     );
 
     fs::remove_dir_all(directory).unwrap();
