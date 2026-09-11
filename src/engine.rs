@@ -15,8 +15,52 @@ use crate::cli::InitArgs;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Config {
+pub(crate) struct Config {
     engine: EngineConfig,
+    #[serde(default, skip_serializing_if = "CheckConfig::is_empty")]
+    pub(crate) check: CheckConfig,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CheckConfig {
+    #[serde(default)]
+    pub(crate) ignore_import_errors: Vec<ImportError>,
+}
+
+impl CheckConfig {
+    fn is_empty(&self) -> bool {
+        self.ignore_import_errors.is_empty()
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportError {
+    pub(crate) message: String,
+    pub(crate) source: String,
+}
+
+pub(crate) fn read_config(project: &Path) -> Result<Option<Config>, Box<dyn Error>> {
+    let path = project.join("gdkit.toml");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let config: Config =
+        toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    for rule in &config.check.ignore_import_errors {
+        if !(rule.message.starts_with("ERROR:") || rule.message.starts_with("SCRIPT ERROR:"))
+            || rule.message.contains(['\n', '\r'])
+            || !rule.source.starts_with("res://")
+            || rule.source.len() <= 6
+            || rule.source.contains(['\n', '\r', '(', ')'])
+        {
+            return Err(format!("{}: ignore_import_errors requires an exact ERROR: or SCRIPT ERROR: message and a res:// source path", path.display()).into());
+        }
+    }
+    Ok(Some(config))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -162,12 +206,7 @@ pub fn resolve(project: &Path, explicit: Option<&Path>) -> Result<PathBuf, Box<d
     } else if let Some(path) = env::var_os("GDKIT_GODOT") {
         PathBuf::from(path)
     } else {
-        let config_path = project.join("gdkit.toml");
-        if !config_path.exists() {
-            return Err("no engine configured; run gdkit init --godot <path> in the project, or supply --godot or GDKIT_GODOT".into());
-        }
-        let config: Config = toml::from_str(&fs::read_to_string(&config_path)?)
-            .map_err(|error| format!("{}: {error}", config_path.display()))?;
+        let config = read_config(project)?.ok_or("no engine configured; run gdkit init --godot <path> in the project, or supply --godot or GDKIT_GODOT")?;
         project.join(config.engine.executable)
     };
     if !path.is_file() {
@@ -254,6 +293,7 @@ pub fn init(args: InitArgs) -> Result<ExitCode, Box<dyn Error>> {
     let (version, _) = validated_version(&engine, &project)?;
     let relative = pathdiff::diff_paths(&engine, &project).unwrap_or_else(|| engine.clone());
     let config = Config {
+        check: CheckConfig::default(),
         engine: EngineConfig {
             executable: relative,
         },

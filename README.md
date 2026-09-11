@@ -112,6 +112,22 @@ the default display; project source locations remain visible. Use `gdkit check
 
 Engine selection does not change the syntax supported by the gdview formatter.
 
+To tolerate a known third-party editor plugin error, add a narrowly scoped import
+exception to the project's `gdkit.toml`:
+
+```toml
+[[check.ignore_import_errors]]
+message = "ERROR: Script inherits from native type 'MarginContainer', so it can't be assigned to an object of type 'FoldableContainer'."
+source = "res://addons/godotsteam_server/godotsteam_plugin.gd"
+```
+
+The entire trimmed error message must match, and its attached Godot stack trace
+must contain the exact source path. Only import diagnostics are eligible; resource
+loading failures, other errors, and unsuccessful process exits still fail checks.
+Matches are counted in normal output; `--verbose` preserves the original output.
+Rules apply to both fresh imports and cached worker diagnostics, and are reread
+on every check. This does not disable the plugin or exclude its files from Godot.
+
 `format-project` and the resource-loading phase of `check` use gdview's shared
 file enumeration with gdkit's Git-aware filtering policy. Extensions are matched
 case-insensitively. Parent `.gitignore` files (including monorepo roots), nested ignore

@@ -110,6 +110,65 @@ pub(crate) fn has_errors(output: &Output) -> bool {
         })
 }
 
+fn filter_import_errors(output: &Output, rules: &[crate::engine::ImportError]) -> (Output, usize) {
+    let mut ignored = 0;
+    let mut filter = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes);
+        let lines: Vec<_> = text.lines().collect();
+        let mut kept = String::new();
+        let mut index = 0;
+        while index < lines.len() {
+            let start = index;
+            index += 1;
+            let message = lines[start].trim();
+            if message.starts_with("ERROR:") || message.starts_with("SCRIPT ERROR:") {
+                while index < lines.len() {
+                    let line = lines[index].trim();
+                    let frame = line
+                        .strip_prefix('[')
+                        .and_then(|line| line.split_once(']'))
+                        .is_some_and(|(number, _)| {
+                            !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+                        });
+                    if !(line.is_empty()
+                        || line.starts_with("at:")
+                        || line.starts_with("GDScript backtrace")
+                        || frame)
+                    {
+                        break;
+                    }
+                    index += 1;
+                }
+                if rules.iter().any(|rule| {
+                    message == rule.message
+                        && lines[start + 1..index].iter().any(|line| {
+                            line.contains(&format!("({}:", rule.source))
+                                || line.contains(&format!("({})", rule.source))
+                        })
+                }) {
+                    ignored += 1;
+                    continue;
+                }
+            }
+            for line in &lines[start..index] {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+        }
+        kept.into_bytes()
+    };
+    let stdout = filter(&output.stdout);
+    let stderr = filter(&output.stderr);
+    (
+        Output {
+            status: output.status,
+            stdout,
+            stderr,
+        },
+        ignored,
+    )
+}
+
 #[derive(Default)]
 struct Diagnostics {
     issues: Vec<String>,
@@ -309,6 +368,10 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         println!("import worker stopped");
         return Ok(ExitCode::SUCCESS);
     }
+    let config = crate::engine::read_config(&project)?;
+    let rules = config.as_ref().map_or(&[][..], |config| {
+        config.check.ignore_import_errors.as_slice()
+    });
     let paths =
         crate::project_files::collect(&project, &["gd", "tscn", "scn", "tres", "res", "gdshader"])?;
     let paths = paths
@@ -367,8 +430,24 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         }
     };
     drop(import_timer);
-    let mut failed = !import.status.success() || has_errors(&import);
-    write_diagnostics(&import, "Import", &project, &paths, args.verbose)?;
+    let (filtered_import, ignored) = filter_import_errors(&import, rules);
+    let mut failed = !import.status.success() || has_errors(&filtered_import);
+    if ignored > 0 {
+        eprintln!(
+            "Import: ignored {ignored} configured diagnostic(s); use --verbose for original output."
+        );
+    }
+    write_diagnostics(
+        if args.verbose {
+            &import
+        } else {
+            &filtered_import
+        },
+        "Import",
+        &project,
+        &paths,
+        args.verbose,
+    )?;
 
     let harness = TemporaryScript::create(HARNESS.as_bytes(), "gd")?;
     let loading_timer = PhaseTimer::new("resource loading", args.timings);
@@ -410,6 +489,54 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_exceptions_require_message_and_own_source_frame() {
+        let rules = vec![crate::engine::ImportError {
+            message: "ERROR: Known plugin problem".into(),
+            source: "res://addons/plugin.gd".into(),
+        }];
+        let output = Output {
+            status: Default::default(),
+            stdout: Vec::new(),
+            stderr: concat!(
+                "ERROR: Known plugin problem\n",
+                "   at: native (core/example.cpp:10)\n",
+                "   GDScript backtrace (most recent call first):\n",
+                "       [0] setup (res://addons/plugin.gd:67)\n",
+                "\n",
+                "GDScript backtrace (most recent call first):\n",
+                "    [0] setup (res://addons/plugin.gd:67)\n",
+                "ERROR: Unrelated problem\n",
+                "       [0] setup (res://addons/plugin.gd:68)\n",
+                "ERROR: Known plugin problem\n",
+                "       [0] setup (res://game.gd:10)\n",
+                "ERROR: Known plugin problem\n",
+                "       [0] setup (res://addons/plugin.gd.backup:10)\n",
+                "ERROR: Known plugin problem\n",
+                "WARNING: Separate diagnostic\n",
+                "       [0] setup (res://addons/plugin.gd:70)\n",
+            )
+            .as_bytes()
+            .to_vec(),
+        };
+        let (filtered, count) = filter_import_errors(&output, &rules);
+        assert_eq!(count, 1);
+        assert!(has_errors(&filtered));
+        let remaining = String::from_utf8(filtered.stderr).unwrap();
+        assert!(!remaining.contains("plugin.gd:67"));
+        assert!(remaining.contains("Unrelated problem"));
+        assert_eq!(remaining.matches("ERROR: Known plugin problem").count(), 3);
+        assert_eq!(filter_import_errors(&output, &[]).1, 0);
+        let known_only = Output {
+            status: Default::default(),
+            stdout: b"ERROR: Known plugin problem\n   at: setup (res://addons/plugin.gd:1)\n"
+                .to_vec(),
+            stderr: Vec::new(),
+        };
+        assert!(!has_errors(&filter_import_errors(&known_only, &rules).0));
+        assert!(has_errors(&known_only));
+    }
 
     #[test]
     fn separates_cleanup_without_hiding_errors_or_project_locations() {
