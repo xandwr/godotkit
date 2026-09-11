@@ -79,7 +79,10 @@ Status: In progress | Owner: Codex | Started: 2026-09-10 | Target: - | Completed
 Blocker: None recorded. Evidence / commits: M01.01-M01.02 report schema and
 serialization tests in `src/report.rs`; raw per-phase stream artifacts and
 occurrence-aware display consolidation in `src/check.rs`, plus live ordered
-stream capture in `src/process.rs` (partial M01.03).
+stream capture in `src/process.rs`. Final JSON reports now populate the contract,
+including fingerprints, phase coverage, failures, and suppression counts.
+Live stdout events, ordered worker capture, structured Logger capture, and
+stopped-operation coverage remain.
 
 - [x] M01.01 Define versioned `CheckReport`: engine fingerprint, project snapshot,
   check policy, requested/completed/skipped phases, failures, artifact locations.
@@ -453,6 +456,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-10 | M01.03-M01.07 partial | Added final JSON check reports and persisted report artifacts with populated diagnostics, phase coverage, fingerprints, suppression counts, and exit-code outcomes | `src/check.rs`, `src/report.rs`, `tests/check.rs`; unit and local Godot validation; next migrate worker capture and add live stdout events |
 | 2026-09-10 | M01.03, M02.01-M02.02 partial | Added shared live stdout/stderr capture with observed ordering, timestamps, process identity, exact stream reconstruction, and deadlines; migrated fresh import, resource loading, and smoke processes | `src/process.rs`, `src/check.rs`; populate reports from captured events and migrate probe/worker lifecycle paths |
 | 2026-09-10 | M01.03 partial | Retained byte-exact stdout/stderr for each executed engine phase and made human diagnostic consolidation report occurrence counts | `src/check.rs`; replace post-exit stream grouping with ordered shared capture before completing M01.03 |
 | 2026-09-10 | M01.01-M01.02 | Added the versioned report and diagnostic data contract with stable JSON names and round-trip coverage | `src/report.rs`; next integrate ordered capture and raw artifacts |

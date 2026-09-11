@@ -131,6 +131,13 @@ pub(crate) fn probe_key(engine: &Path) -> std::io::Result<ProbeKey> {
     })
 }
 
+pub(crate) fn fingerprint(engine: &Path) -> Result<String, Box<dyn Error>> {
+    let key = probe_key(engine)?;
+    Ok(blake3::hash(&serde_json::to_vec(&key)?)
+        .to_hex()
+        .to_string())
+}
+
 fn cached_probe(
     engine: &Path,
     cache: &Path,

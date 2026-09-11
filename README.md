@@ -66,6 +66,14 @@ error or a resource fails to load, and exits 2 for tooling failures such as a
 missing project, invalid configuration, or incompatible engine. This checks
 resource loading, not gameplay execution or a complete C# build.
 
+Use `gdkit check game --output json` to emit a versioned report on stdout, with
+progress and human diagnostics on stderr. The report includes the outcome,
+engine identity, project content fingerprint, phase coverage, structured
+diagnostics with occurrence counts, failures, and artifact paths. Exit codes
+remain 0 for success, 1 for validation failure or incomplete checks, and 2 for
+tooling failures. Each check retains `report.json`, original phase stdout/stderr,
+and ordered output events under `.godot/gdkit/checks/`.
+
 Use `gdkit check game --strict-methods` to reject calls whose methods are not
 guaranteed by the receiver's declared or inferred type, including calls in code
 that never executes. To enable this for every check, set:

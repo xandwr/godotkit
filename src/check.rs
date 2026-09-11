@@ -12,7 +12,13 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::cli::CheckArgs;
+use gdkit::report::{
+    Artifact, ArtifactKind, CheckCounts, CheckFailure, CheckOutcome, CheckPhase, CheckPolicy,
+    CheckReport, Diagnostic, DiagnosticSeverity, DiagnosticStream, EngineFingerprint, FailureKind,
+    PhaseIdentity, ProcessIdentity, ProjectSnapshot, SkippedPhase, StackFrame,
+};
+
+use crate::cli::{CheckArgs, CheckOutput};
 use crate::process::{CapturedOutput, OutputStream};
 
 const HARNESS: &str = include_str!("check.gd");
@@ -118,21 +124,23 @@ impl CheckArtifacts {
         ))
     }
 
-    fn preserve(&self, phase: &str, output: &CapturedOutput) -> io::Result<()> {
-        fs::write(
-            self.directory.join(format!("{phase}.stdout.log")),
-            &output.output.stdout,
-        )?;
-        fs::write(
-            self.directory.join(format!("{phase}.stderr.log")),
-            &output.output.stderr,
-        )?;
+    fn preserve(
+        &self,
+        name: &str,
+        phase: &PhaseIdentity,
+        output: &CapturedOutput,
+    ) -> io::Result<Vec<Artifact>> {
+        let stdout = self.directory.join(format!("{name}.stdout.log"));
+        let stderr = self.directory.join(format!("{name}.stderr.log"));
+        let event_stream = self.directory.join(format!("{name}.events.jsonl"));
+        fs::write(&stdout, &output.output.stdout)?;
+        fs::write(&stderr, &output.output.stderr)?;
         let mut events = Vec::new();
-        for (sequence, line) in output.lines.iter().enumerate() {
+        for line in &output.lines {
             serde_json::to_writer(
                 &mut events,
                 &serde_json::json!({
-                    "sequence": sequence,
+                    "sequence": line.sequence,
                     "stream": match line.stream {
                         OutputStream::Stdout => "stdout",
                         OutputStream::Stderr => "stderr",
@@ -144,9 +152,219 @@ impl CheckArtifacts {
             )?;
             events.push(b'\n');
         }
-        fs::write(self.directory.join(format!("{phase}.events.jsonl")), events)?;
-        Ok(())
+        fs::write(&event_stream, events)?;
+        Ok(vec![
+            Artifact {
+                kind: ArtifactKind::Stdout,
+                phase: Some(phase.clone()),
+                path: stdout,
+            },
+            Artifact {
+                kind: ArtifactKind::Stderr,
+                phase: Some(phase.clone()),
+                path: stderr,
+            },
+            Artifact {
+                kind: ArtifactKind::EventStream,
+                phase: Some(phase.clone()),
+                path: event_stream,
+            },
+        ])
     }
+
+    fn preserve_report(&self, report: &mut CheckReport) -> io::Result<()> {
+        let path = self.directory.join("report.json");
+        report.artifacts.push(Artifact {
+            kind: ArtifactKind::Report,
+            phase: None,
+            path: path.clone(),
+        });
+        let result = serde_json::to_vec_pretty(report)
+            .map_err(io::Error::from)
+            .and_then(|bytes| fs::write(path, bytes));
+        if result.is_err() {
+            report.artifacts.pop();
+        }
+        result
+    }
+}
+
+fn phase(id: impl Into<String>, kind: CheckPhase) -> PhaseIdentity {
+    PhaseIdentity {
+        id: id.into(),
+        kind,
+    }
+}
+
+fn requested_phases(args: &CheckArgs) -> Vec<PhaseIdentity> {
+    let mut phases = vec![
+        phase("file_scan", CheckPhase::FileScan),
+        phase("engine_validation", CheckPhase::EngineValidation),
+        phase("import", CheckPhase::Import),
+        phase("resource_loading", CheckPhase::ResourceLoading),
+    ];
+    phases.extend(args.scene.iter().enumerate().map(|(index, scene)| {
+        phase(
+            format!("scene_smoke:{}:{scene}", index + 1),
+            CheckPhase::SceneSmoke,
+        )
+    }));
+    phases
+}
+
+fn project_fingerprint(project: &Path, paths: &[String]) -> Result<String, Box<dyn Error>> {
+    let mut hasher = blake3::Hasher::new();
+    for path in std::iter::once("res://project.godot")
+        .chain(
+            project
+                .join("gdkit.toml")
+                .is_file()
+                .then_some("res://gdkit.toml"),
+        )
+        .chain(paths.iter().map(String::as_str))
+    {
+        hasher.update(path.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&fs::read(project.join(path.trim_start_matches("res://")))?);
+        hasher.update(&[0]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn diagnostic_header(line: &str) -> Option<(DiagnosticSeverity, Option<String>, String)> {
+    let line = line.trim_start();
+    if let Some(message) = line.strip_prefix("SCRIPT ERROR:") {
+        Some((
+            DiagnosticSeverity::Error,
+            Some("SCRIPT_ERROR".into()),
+            message.trim().into(),
+        ))
+    } else if let Some(message) = line.strip_prefix("ERROR:") {
+        Some((DiagnosticSeverity::Error, None, message.trim().into()))
+    } else {
+        line.strip_prefix("WARNING:")
+            .map(|message| (DiagnosticSeverity::Warning, None, message.trim().into()))
+    }
+}
+
+fn stack_frame(line: &str) -> Option<StackFrame> {
+    let line = line.trim();
+    if !line.starts_with("at:")
+        && !line
+            .strip_prefix('[')
+            .and_then(|line| line.split_once(']'))
+            .is_some_and(|(index, _)| index.parse::<usize>().is_ok())
+    {
+        return None;
+    }
+    let close = line.rfind(')')?;
+    let open = line[..close].rfind('(')?;
+    let mut location = &line[open + 1..close];
+    let (mut resource, mut line_number, mut column) = (location, None, None);
+    if let Some((before, value)) = location.rsplit_once(':')
+        && let Ok(value) = value.parse::<u32>()
+    {
+        resource = before;
+        line_number = Some(value);
+        location = before;
+        if let Some((before, value)) = location.rsplit_once(':')
+            && let Ok(value) = value.parse::<u32>()
+        {
+            resource = before;
+            column = line_number;
+            line_number = Some(value);
+        }
+    }
+    let mut function = line[..open].trim();
+    if let Some(rest) = function.strip_prefix("at:") {
+        function = rest.trim();
+    }
+    if let Some((_, rest)) = function
+        .strip_prefix('[')
+        .and_then(|function| function.split_once(']'))
+    {
+        function = rest.trim();
+    }
+    Some(StackFrame {
+        function: (!function.is_empty()).then(|| function.into()),
+        resource: (!resource.is_empty()).then(|| resource.into()),
+        line: line_number,
+        column,
+    })
+}
+
+fn structured_diagnostics(
+    output: &CapturedOutput,
+    phase: &PhaseIdentity,
+    sequence_base: u64,
+    session_id: &str,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (index, event) in output.lines.iter().enumerate() {
+        let text = String::from_utf8_lossy(&event.bytes);
+        let Some((severity, engine_code, message)) = diagnostic_header(&text) else {
+            continue;
+        };
+        let mut frames = Vec::new();
+        for following in &output.lines[index + 1..] {
+            if following.stream != event.stream {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&following.bytes);
+            if diagnostic_header(&text).is_some() {
+                break;
+            }
+            if let Some(frame) = stack_frame(&text) {
+                frames.push(frame);
+            }
+        }
+        let source = frames
+            .iter()
+            .find(|frame| {
+                frame
+                    .resource
+                    .as_deref()
+                    .is_some_and(|resource| resource.starts_with("res://"))
+            })
+            .cloned();
+        let stream = match event.stream {
+            OutputStream::Stdout => DiagnosticStream::Stdout,
+            OutputStream::Stderr => DiagnosticStream::Stderr,
+        };
+        if let Some(existing) = diagnostics.iter_mut().find(|diagnostic: &&mut Diagnostic| {
+            diagnostic.phase == *phase
+                && diagnostic.severity == severity
+                && diagnostic.stream == stream
+                && diagnostic.engine_code == engine_code
+                && diagnostic.message == message
+                && diagnostic.resource == source.as_ref().and_then(|frame| frame.resource.clone())
+                && diagnostic.line == source.as_ref().and_then(|frame| frame.line)
+                && diagnostic.column == source.as_ref().and_then(|frame| frame.column)
+                && diagnostic.stack_frames == frames
+        }) {
+            existing.occurrence_count += 1;
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            sequence: sequence_base + u64::try_from(event.sequence).unwrap_or(u64::MAX),
+            phase: phase.clone(),
+            severity,
+            stream,
+            engine_code,
+            message,
+            resource: source.as_ref().and_then(|frame| frame.resource.clone()),
+            line: source.as_ref().and_then(|frame| frame.line),
+            column: source.as_ref().and_then(|frame| frame.column),
+            stack_frames: frames,
+            process: Some(ProcessIdentity {
+                session_id: format!("{session_id}:{}", phase.id),
+                pid: (output.pid != 0).then_some(output.pid),
+            }),
+            timestamp_unix_ms: Some(event.observed_at_unix_ms),
+            occurrence_count: 1,
+        });
+    }
+    diagnostics
 }
 
 fn engine_output(engine: &Path, project: &Path, args: &[&OsStr]) -> io::Result<CapturedOutput> {
@@ -462,35 +680,163 @@ fn print_summary(failed: bool, counts: Option<&Counts>) -> io::Result<()> {
     writeln!(output, "\x1b[0m")
 }
 
+struct ExecutionSummary {
+    counts: Option<Counts>,
+    smoke_count: usize,
+    strict_methods: bool,
+}
+
+fn exit_code(outcome: CheckOutcome) -> ExitCode {
+    match outcome {
+        CheckOutcome::Passed => ExitCode::SUCCESS,
+        CheckOutcome::ValidationFailed | CheckOutcome::Incomplete | CheckOutcome::Stopped => {
+            ExitCode::from(1)
+        }
+        CheckOutcome::ToolFailed => ExitCode::from(2),
+    }
+}
+
+fn emit_report(
+    output: CheckOutput,
+    report: &CheckReport,
+    summary: Option<&ExecutionSummary>,
+) -> Result<(), Box<dyn Error>> {
+    match output {
+        CheckOutput::Json => println!("{}", serde_json::to_string(report)?),
+        CheckOutput::Human => {
+            if let Some(summary) = summary {
+                print_summary(
+                    report.outcome != CheckOutcome::Passed,
+                    summary.counts.as_ref(),
+                )?;
+                if summary.counts.is_some() {
+                    eprintln!(
+                        "coverage: resource loading{}; {} scene smoke checks executed",
+                        if summary.strict_methods {
+                            " and strict method validation"
+                        } else {
+                            " (project warning policy)"
+                        },
+                        summary.smoke_count
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let _total = PhaseTimer::new("total", args.timings);
-    let project = crate::engine::project_root(&args.project)?;
     if args.stop_worker {
+        let project = crate::engine::project_root(&args.project)?;
         crate::import_worker::stop_project(&project)?;
         println!("import worker stopped");
         return Ok(ExitCode::SUCCESS);
     }
-    let persistent_import = !args.fresh;
-    let result = run_project(args, &project);
-    let failed = match &result {
-        Ok(code) => *code != ExitCode::SUCCESS,
-        Err(_) => true,
+    let mut report = CheckReport::new(
+        ProjectSnapshot {
+            root: args.project.clone(),
+            fingerprint: "unavailable".into(),
+        },
+        CheckPolicy {
+            strict_methods: args.strict_methods,
+            fresh_import: args.fresh,
+            ignored_import_diagnostics: 0,
+        },
+    );
+    report.requested_phases = requested_phases(&args);
+    let project = match crate::engine::project_root(&args.project) {
+        Ok(project) => project,
+        Err(error) => {
+            report.outcome = CheckOutcome::ToolFailed;
+            report.failures.push(CheckFailure {
+                kind: FailureKind::Tool,
+                phase: None,
+                message: error.to_string(),
+            });
+            if args.output == CheckOutput::Json {
+                eprintln!("error: {error}");
+                emit_report(args.output, &report, None)?;
+                return Ok(ExitCode::from(2));
+            }
+            return Err(error);
+        }
     };
+    report.project.root = project.clone();
+    let artifacts = match CheckArtifacts::create(&project) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            report.outcome = CheckOutcome::ToolFailed;
+            report.failures.push(CheckFailure {
+                kind: FailureKind::Tool,
+                phase: None,
+                message: error.to_string(),
+            });
+            if args.output == CheckOutput::Json {
+                eprintln!("error: {error}");
+                emit_report(args.output, &report, None)?;
+                return Ok(ExitCode::from(2));
+            }
+            return Err(error.into());
+        }
+    };
+    eprintln!(
+        "artifacts: {}",
+        crate::engine::display_path(&artifacts.directory)
+    );
+    let persistent_import = !args.fresh;
+    let result = run_project(&args, &project, &artifacts, &mut report);
+    if let Err(error) = &result {
+        report.outcome = CheckOutcome::ToolFailed;
+        report.failures.push(CheckFailure {
+            kind: FailureKind::Tool,
+            phase: None,
+            message: error.to_string(),
+        });
+    }
+    let failed = result.is_err() || report.outcome != CheckOutcome::Passed;
     if failed
         && persistent_import
         && let Err(error) = crate::import_worker::stop_project(&project)
     {
         eprintln!("warning: failed to stop import worker after check failure: {error}");
     }
-    result
+    if let Err(error) = artifacts.preserve_report(&mut report) {
+        report.outcome = CheckOutcome::ToolFailed;
+        report.failures.push(CheckFailure {
+            kind: FailureKind::Tool,
+            phase: None,
+            message: error.to_string(),
+        });
+        if args.output == CheckOutput::Json {
+            eprintln!("error: {error}");
+            emit_report(args.output, &report, None)?;
+            return Ok(ExitCode::from(2));
+        }
+        return Err(error.into());
+    }
+    match result {
+        Ok(summary) => {
+            let code = exit_code(report.outcome);
+            emit_report(args.output, &report, Some(&summary))?;
+            Ok(code)
+        }
+        Err(error) if args.output == CheckOutput::Json => {
+            eprintln!("error: {error}");
+            emit_report(args.output, &report, None)?;
+            Ok(ExitCode::from(2))
+        }
+        Err(error) => Err(error),
+    }
 }
 
-fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Error>> {
-    let artifacts = CheckArtifacts::create(project)?;
-    eprintln!(
-        "artifacts: {}",
-        crate::engine::display_path(&artifacts.directory)
-    );
+fn run_project(
+    args: &CheckArgs,
+    project: &Path,
+    artifacts: &CheckArtifacts,
+    report: &mut CheckReport,
+) -> Result<ExecutionSummary, Box<dyn Error>> {
     let scan_timer = PhaseTimer::new("file scan", args.timings);
     let scenes = args
         .scene
@@ -533,6 +879,15 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
     let manifest = TemporaryScript::create(&serde_json::to_vec(&paths)?, "json")?;
+    report.project.fingerprint = project_fingerprint(project, &paths)?;
+    report.policy = CheckPolicy {
+        strict_methods,
+        fresh_import: args.fresh,
+        ignored_import_diagnostics: rules.len(),
+    };
+    report
+        .completed_phases
+        .push(phase("file_scan", CheckPhase::FileScan));
     drop(scan_timer);
     let mut validation_timer = PhaseTimer::new("engine validation (probe)", args.timings);
     let engine = crate::engine::resolve(project, args.godot.as_deref())?;
@@ -540,11 +895,25 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
     if cached {
         validation_timer.name = "engine validation (cached)";
     }
+    report.engine = Some(EngineFingerprint {
+        executable: engine.clone(),
+        version: version.clone(),
+        fingerprint: crate::engine::fingerprint(&engine)?,
+    });
+    report
+        .completed_phases
+        .push(phase("engine_validation", CheckPhase::EngineValidation));
     drop(validation_timer);
     eprintln!(
         "engine: {} ({version})",
         crate::engine::display_path(&engine)
     );
+    let session_id = artifacts
+        .directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("check");
+    let mut sequence_base = 0;
 
     let mut import_timer = PhaseTimer::new("import", args.timings);
     let import = if args.fresh {
@@ -576,9 +945,36 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
         }
     };
     drop(import_timer);
-    artifacts.preserve("import", &import)?;
+    let import_phase = phase("import", CheckPhase::Import);
+    report
+        .artifacts
+        .extend(artifacts.preserve("import", &import_phase, &import)?);
     let (filtered_import, ignored) = filter_import_errors(&import, rules);
-    let mut failed = !import.output.status.success() || has_errors(&filtered_import.output);
+    report.suppressed_diagnostics += ignored;
+    report.diagnostics.extend(structured_diagnostics(
+        &filtered_import,
+        &import_phase,
+        sequence_base,
+        session_id,
+    ));
+    sequence_base += u64::try_from(import.lines.len()).unwrap_or(u64::MAX);
+    report.completed_phases.push(import_phase.clone());
+    let import_errors = has_errors(&filtered_import.output);
+    let mut failed = !import.output.status.success() || import_errors;
+    if !import.output.status.success() {
+        report.failures.push(CheckFailure {
+            kind: FailureKind::ProcessExit,
+            phase: Some(import_phase.clone()),
+            message: format!("Godot process exited with {}", import.output.status),
+        });
+    }
+    if import_errors {
+        report.failures.push(CheckFailure {
+            kind: FailureKind::Diagnostic,
+            phase: Some(import_phase),
+            message: "import reported one or more errors".into(),
+        });
+    }
     if ignored > 0 {
         eprintln!(
             "Import: ignored {ignored} configured diagnostic(s); use --verbose for original output."
@@ -614,26 +1010,78 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
         ],
     )?;
     drop(loading_timer);
-    artifacts.preserve("resource-loading", &check)?;
-    let check_failed = !check.output.status.success() || has_errors(&check.output);
+    let loading_phase = phase("resource_loading", CheckPhase::ResourceLoading);
+    report
+        .artifacts
+        .extend(artifacts.preserve("resource-loading", &loading_phase, &check)?);
+    report.diagnostics.extend(structured_diagnostics(
+        &check,
+        &loading_phase,
+        sequence_base,
+        session_id,
+    ));
+    sequence_base += u64::try_from(check.lines.len()).unwrap_or(u64::MAX);
+    let check_errors = has_errors(&check.output);
+    let check_failed = !check.output.status.success() || check_errors;
+    if !check.output.status.success() {
+        report.failures.push(CheckFailure {
+            kind: FailureKind::ProcessExit,
+            phase: Some(loading_phase.clone()),
+            message: format!("Godot process exited with {}", check.output.status),
+        });
+    }
+    if check_errors {
+        report.failures.push(CheckFailure {
+            kind: FailureKind::Diagnostic,
+            phase: Some(loading_phase.clone()),
+            message: "resource loading reported one or more errors".into(),
+        });
+    }
     write_diagnostics(&check, "Resource loading", project, &paths, args.verbose)?;
     let result = match harness_result(&check) {
-        Ok(result) => result,
-        Err(error) if check_failed => {
-            eprintln!("error: {error}; resource checks did not complete");
-            print_summary(true, None)?;
-            return Ok(ExitCode::from(1));
+        Ok(result) => {
+            report.completed_phases.push(loading_phase.clone());
+            result
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            eprintln!("error: {error}; resource checks did not complete");
+            report.failures.push(CheckFailure {
+                kind: FailureKind::MissingCompletion,
+                phase: Some(loading_phase),
+                message: error.to_string(),
+            });
+            for smoke in report
+                .requested_phases
+                .iter()
+                .filter(|phase| phase.kind == CheckPhase::SceneSmoke)
+            {
+                report.skipped_phases.push(SkippedPhase {
+                    phase: smoke.clone(),
+                    reason: "resource checks did not complete".into(),
+                });
+            }
+            report.outcome = CheckOutcome::Incomplete;
+            return Ok(ExecutionSummary {
+                counts: None,
+                smoke_count: 0,
+                strict_methods,
+            });
+        }
     };
     failed |= check_failed || !result.failures.is_empty();
     for path in &result.failures {
         eprintln!("error: failed to load {path}");
+        report.failures.push(CheckFailure {
+            kind: FailureKind::ResourceLoad,
+            phase: Some(loading_phase.clone()),
+            message: format!("failed to load {path}"),
+        });
     }
 
     let mut smoke_count = 0;
     if !failed {
         for (index, scene) in scenes.iter().enumerate() {
+            let smoke_phase = report.requested_phases[4 + index].clone();
             let phase = format!("Scene smoke {}", scene.display());
             let output = smoke_output(
                 &engine,
@@ -642,10 +1090,42 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
                 args.smoke_frames,
                 args.smoke_timeout,
             )?;
-            artifacts.preserve(&format!("scene-smoke-{}", index + 1), &output)?;
+            report.artifacts.extend(artifacts.preserve(
+                &format!("scene-smoke-{}", index + 1),
+                &smoke_phase,
+                &output,
+            )?);
+            report.diagnostics.extend(structured_diagnostics(
+                &output,
+                &smoke_phase,
+                sequence_base,
+                session_id,
+            ));
+            sequence_base += u64::try_from(output.lines.len()).unwrap_or(u64::MAX);
             write_diagnostics(&output, &phase, project, &paths, args.verbose)?;
             if output.timed_out {
                 eprintln!("error: {phase} exceeded {} seconds", args.smoke_timeout);
+                report.failures.push(CheckFailure {
+                    kind: FailureKind::Timeout,
+                    phase: Some(smoke_phase.clone()),
+                    message: format!("exceeded {} seconds", args.smoke_timeout),
+                });
+            } else {
+                report.completed_phases.push(smoke_phase.clone());
+            }
+            if !output.output.status.success() && !output.timed_out {
+                report.failures.push(CheckFailure {
+                    kind: FailureKind::ProcessExit,
+                    phase: Some(smoke_phase.clone()),
+                    message: format!("Godot process exited with {}", output.output.status),
+                });
+            }
+            if has_errors(&output.output) {
+                report.failures.push(CheckFailure {
+                    kind: FailureKind::Diagnostic,
+                    phase: Some(smoke_phase),
+                    message: "scene smoke reported one or more errors".into(),
+                });
             }
             failed |=
                 output.timed_out || !output.output.status.success() || has_errors(&output.output);
@@ -653,20 +1133,32 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
         }
     } else if !scenes.is_empty() {
         eprintln!("Scene smoke checks skipped because resource validation failed.");
-    }
-    print_summary(failed, Some(&result.counts))?;
-    eprintln!(
-        "coverage: resource loading{}; {smoke_count} scene smoke checks executed",
-        if strict_methods {
-            " and strict method validation"
-        } else {
-            " (project warning policy)"
+        for smoke in report
+            .requested_phases
+            .iter()
+            .filter(|phase| phase.kind == CheckPhase::SceneSmoke)
+        {
+            report.skipped_phases.push(SkippedPhase {
+                phase: smoke.clone(),
+                reason: "resource validation failed".into(),
+            });
         }
-    );
-    Ok(if failed {
-        ExitCode::from(1)
+    }
+    report.checked = Some(CheckCounts {
+        scripts: result.counts.scripts,
+        scenes: result.counts.scenes,
+        resources: result.counts.resources,
+        smoke_scenes: smoke_count,
+    });
+    report.outcome = if failed {
+        CheckOutcome::ValidationFailed
     } else {
-        ExitCode::SUCCESS
+        CheckOutcome::Passed
+    };
+    Ok(ExecutionSummary {
+        counts: Some(result.counts),
+        smoke_count,
+        strict_methods,
     })
 }
 
@@ -814,6 +1306,40 @@ mod tests {
     }
 
     #[test]
+    fn structured_diagnostics_keep_sources_streams_and_occurrences() {
+        let output = CapturedOutput::from_output(Output {
+            status: Default::default(),
+            stdout: b"WARNING: first\n".to_vec(),
+            stderr: concat!(
+                "SCRIPT ERROR: Invalid call.\n",
+                "   at: run (res://player.gd:17)\n",
+                "SCRIPT ERROR: Invalid call.\n",
+                "   at: run (res://player.gd:17)\n",
+            )
+            .as_bytes()
+            .to_vec(),
+        });
+        let identity = phase("resource_loading", CheckPhase::ResourceLoading);
+        let diagnostics = structured_diagnostics(&output, &identity, 10, "check");
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(diagnostics[0].sequence, 10);
+        assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Warning);
+        assert_eq!(diagnostics[0].stream, DiagnosticStream::Stdout);
+        let error = &diagnostics[1];
+        assert_eq!(error.sequence, 11);
+        assert_eq!(error.stream, DiagnosticStream::Stderr);
+        assert_eq!(error.resource.as_deref(), Some("res://player.gd"));
+        assert_eq!(error.line, Some(17));
+        assert_eq!(error.occurrence_count, 2);
+        assert_eq!(error.stack_frames.len(), 1);
+        assert_eq!(error.phase, identity);
+        assert_eq!(
+            error.process.as_ref().unwrap().session_id,
+            "check:resource_loading"
+        );
+    }
+
+    #[test]
     fn preserves_raw_phase_streams_as_check_artifacts() {
         let directory = env::temp_dir().join(format!("gdkit-artifacts-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
@@ -824,7 +1350,13 @@ mod tests {
             stderr: b"raw stderr\n".to_vec(),
         };
         let output = CapturedOutput::from_output(output);
-        artifacts.preserve("resource-loading", &output).unwrap();
+        artifacts
+            .preserve(
+                "resource-loading",
+                &phase("resource_loading", CheckPhase::ResourceLoading),
+                &output,
+            )
+            .unwrap();
         assert_eq!(
             fs::read(artifacts.directory.join("resource-loading.stdout.log")).unwrap(),
             output.output.stdout

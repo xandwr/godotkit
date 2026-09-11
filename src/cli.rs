@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -35,6 +35,13 @@ pub struct InitArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Select human or JSON result output"
+    )]
+    pub output: CheckOutput,
     #[arg(long, help = "Reject method calls not guaranteed by the receiver type")]
     pub strict_methods: bool,
     #[arg(
@@ -66,10 +73,16 @@ pub struct CheckArgs {
     #[arg(
         long,
         conflicts_with = "fresh",
-        conflicts_with_all = ["scene", "strict_methods", "smoke_frames", "smoke_timeout"],
+        conflicts_with_all = ["scene", "strict_methods", "smoke_frames", "smoke_timeout", "output"],
         help = "Stop this project's background import editor without checking"
     )]
     pub stop_worker: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CheckOutput {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Args)]

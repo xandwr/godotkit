@@ -14,6 +14,7 @@ pub struct CheckReport {
     pub requested_phases: Vec<PhaseIdentity>,
     pub completed_phases: Vec<PhaseIdentity>,
     pub skipped_phases: Vec<SkippedPhase>,
+    pub checked: Option<CheckCounts>,
     pub diagnostics: Vec<Diagnostic>,
     pub failures: Vec<CheckFailure>,
     pub suppressed_diagnostics: usize,
@@ -31,12 +32,21 @@ impl CheckReport {
             requested_phases: Vec::new(),
             completed_phases: Vec::new(),
             skipped_phases: Vec::new(),
+            checked: None,
             diagnostics: Vec::new(),
             failures: Vec::new(),
             suppressed_diagnostics: 0,
             artifacts: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckCounts {
+    pub scripts: usize,
+    pub scenes: usize,
+    pub resources: usize,
+    pub smoke_scenes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +239,12 @@ mod tests {
         report.skipped_phases.push(SkippedPhase {
             phase: smoke,
             reason: "resource validation failed".into(),
+        });
+        report.checked = Some(CheckCounts {
+            scripts: 1,
+            scenes: 1,
+            resources: 1,
+            smoke_scenes: 0,
         });
         report.diagnostics.push(Diagnostic {
             sequence: 0,

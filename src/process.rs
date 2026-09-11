@@ -14,6 +14,7 @@ pub(crate) enum OutputStream {
 
 #[derive(Clone, Debug)]
 pub(crate) struct OutputLine {
+    pub(crate) sequence: usize,
     pub(crate) stream: OutputStream,
     pub(crate) bytes: Vec<u8>,
     pub(crate) observed_at_unix_ms: u64,
@@ -84,6 +85,7 @@ fn collect_existing_lines(lines: &mut Vec<OutputLine>, stream: OutputStream, byt
         match reader.read_until(b'\n', &mut line) {
             Ok(0) => break,
             Ok(_) => lines.push(OutputLine {
+                sequence: lines.len(),
                 stream,
                 bytes: line,
                 observed_at_unix_ms: timestamp(),
@@ -106,6 +108,7 @@ fn read_lines(
         }
         if sender
             .send(OutputLine {
+                sequence: 0,
                 stream,
                 bytes,
                 observed_at_unix_ms: timestamp(),
@@ -167,7 +170,10 @@ pub(crate) fn run(command: &mut Command, timeout: Option<Duration>) -> io::Resul
     stderr_reader
         .join()
         .map_err(|_| io::Error::other("stderr capture thread panicked"))??;
-    let lines: Vec<_> = receiver.into_iter().collect();
+    let mut lines: Vec<_> = receiver.into_iter().collect();
+    for (sequence, line) in lines.iter_mut().enumerate() {
+        line.sequence = sequence;
+    }
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     for line in &lines {

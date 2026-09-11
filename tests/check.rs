@@ -104,6 +104,29 @@ fn checks_project_scripts_scenes_and_resources() {
         String::from_utf8(clean.stdout).unwrap(),
         "check passed: checked 1 scripts, 1 scenes, 1 resources\n"
     );
+    let json = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
+        .args(["check", directory.to_str().unwrap(), "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let report: gdkit::report::CheckReport = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(report.outcome, gdkit::report::CheckOutcome::Passed);
+    assert_eq!(report.schema_version, 1);
+    assert_eq!(report.completed_phases, report.requested_phases);
+    assert_eq!(report.checked.as_ref().unwrap().scripts, 1);
+    assert!(report.project.fingerprint.len() == 64);
+    assert!(report.engine.as_ref().unwrap().fingerprint.len() == 64);
+    assert!(report.diagnostics.is_empty());
+    assert!(report.failures.is_empty());
+    assert!(report.artifacts.iter().any(|artifact| {
+        artifact.kind == gdkit::report::ArtifactKind::Report && artifact.path.is_file()
+    }));
+    assert!(!String::from_utf8_lossy(&json.stderr).contains("check passed"));
     let colored = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .env_remove("GDKIT_GODOT")
         .env_remove("NO_COLOR")
@@ -132,6 +155,29 @@ fn checks_project_scripts_scenes_and_resources() {
     assert_eq!(broken.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&broken.stdout).starts_with("check failed:"));
     assert!(String::from_utf8_lossy(&broken.stderr).contains("missing.gd"));
+    let broken_json = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
+        .args(["check", directory.to_str().unwrap(), "--output", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(broken_json.status.code(), Some(1));
+    let report: gdkit::report::CheckReport = serde_json::from_slice(&broken_json.stdout).unwrap();
+    assert_eq!(
+        report.outcome,
+        gdkit::report::CheckOutcome::ValidationFailed
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == gdkit::report::DiagnosticSeverity::Error)
+    );
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.kind == gdkit::report::FailureKind::Diagnostic)
+    );
 
     fs::remove_file(directory.join("broken.tscn")).unwrap();
     fs::write(
@@ -200,6 +246,21 @@ fn engine_configuration_errors_and_precedence() {
         String::from_utf8(output.stderr).unwrap()
     };
     assert!(run(&["check"], None).contains("gdkit init --godot"));
+    let json = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .args(["check", "--output", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(json.status.code(), Some(2));
+    let report: gdkit::report::CheckReport = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(report.outcome, gdkit::report::CheckOutcome::ToolFailed);
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.kind == gdkit::report::FailureKind::Tool)
+    );
     assert!(run(&["init", "--godot", "missing-init"], None).contains("missing-init"));
     assert!(!directory.join("gdkit.toml").exists());
     assert!(
