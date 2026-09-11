@@ -39,9 +39,24 @@ impl Drop for ProbeDirectory {
 
 pub fn project_root(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let root = fs::canonicalize(path)?;
+    if !root.join("project.godot").is_file() {
+        return Err(format!(
+            "no project.godot in {}\nRun from the directory containing project.godot, or use gdkit check <project-directory> (for example: gdkit check game).",
+            display_path(&root)
+        ).into());
+    }
     gdview::Project::open(&root)?;
     fs::read_to_string(root.join("project.godot"))?;
     Ok(root)
+}
+
+pub(crate) fn display_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+    }
 }
 
 pub fn resolve(project: &Path, explicit: Option<&Path>) -> Result<PathBuf, Box<dyn Error>> {

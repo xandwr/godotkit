@@ -138,6 +138,25 @@ fn checks_project_scripts_scenes_and_resources() {
     assert!(String::from_utf8_lossy(&invalid_script.stdout).starts_with("\x1b[31mcheck failed:"));
     assert!(String::from_utf8_lossy(&invalid_script.stdout).ends_with("\x1b[0m\n"));
     assert!(String::from_utf8_lossy(&invalid_script.stderr).contains("broken.gd"));
+    fs::write(
+        directory.join("broken.gd"),
+        "extends Node\n\nvar missing = preload(\"uid://daaaaaaaaaaaa\")\n",
+    )
+    .unwrap();
+    let unresolved = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env("NO_COLOR", "1")
+        .env_remove("GDKIT_GODOT")
+        .args(["check", directory.to_str().unwrap(), "--verbose"])
+        .output()
+        .unwrap();
+    assert_eq!(unresolved.status.code(), Some(1));
+    let diagnostics = String::from_utf8_lossy(&unresolved.stderr);
+    assert!(
+        diagnostics.contains("Godot cannot resolve this resource ID to a file."),
+        "{diagnostics}"
+    );
+    assert!(diagnostics.contains("res://broken.gd:3:"), "{diagnostics}");
+    assert!(diagnostics.contains("Resource loading full Godot output:"));
     fs::remove_dir_all(directory).unwrap();
 }
 

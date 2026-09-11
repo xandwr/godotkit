@@ -39,6 +39,8 @@ pub struct CheckArgs {
     pub project: PathBuf,
     #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
     pub godot: Option<PathBuf>,
+    #[arg(long, help = "Show full Godot output, including engine stack traces")]
+    pub verbose: bool,
 }
 
 #[derive(Debug, Args)]

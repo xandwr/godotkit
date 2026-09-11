@@ -61,6 +61,15 @@ The final summary explicitly says `check passed` or `check failed`, colored gree
 or red in a terminal. Redirected output is plain text by default; `NO_COLOR`
 disables color.
 
+Diagnostics are grouped by import and resource loading, with shutdown allocation
+reports collected separately after other messages. Cleanup `ERROR` entries still
+fail the check; grouping does not change exit status. Unrecognized resource UIDs
+include an explanation and matching references with line numbers from checked
+text files and `project.godot`. Matches are repair candidates, not proof of which
+reference caused the error. Engine-internal `at:` stack frames are omitted from
+the default display; project source locations remain visible. Use `gdkit check
+--verbose` to also print the full captured Godot output.
+
 Engine selection does not change the syntax supported by the gdview formatter.
 
 `format-project` and the resource-loading phase of `check` share Git-aware file
