@@ -11,6 +11,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = "Refresh and manage Godot project caches")]
+    Cache(CacheArgs),
+    #[command(about = "Refresh Godot project caches (alias for cache refresh)")]
+    Import(CacheProjectArgs),
     #[command(about = "Query the configured engine and project's API")]
     Api(ApiArgs),
     #[command(about = "Print autoload initialization order")]
@@ -41,6 +45,26 @@ pub enum Command {
     Restart(SessionArgs),
     #[command(about = "Inspect a live named session")]
     Inspect(InspectArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CacheArgs {
+    #[command(subcommand)]
+    pub command: CacheCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CacheCommand {
+    #[command(about = "Rescan files and update UID, script-class, and import caches")]
+    Refresh(CacheProjectArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CacheProjectArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

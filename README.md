@@ -129,6 +129,18 @@ roots; `/root` is always reported as the default context. Live peer state and
 runtime-created nodes remain outside static inspection. Engine selection follows
 the same precedence as `api` and `check`.
 
+Run `gdkit cache refresh [PROJECT]` (or `gdkit import [PROJECT]`) after adding,
+moving, or deleting files outside Godot. It stops gdkit's background importer,
+runs a headless editor import to completion, and persists Godot's UID,
+script-class, and import caches without the resource-validation pass of `check`.
+Engine selection follows `check`, including `--godot`. Move a script's `.uid`
+sidecar with the script to preserve its identity. Refresh cannot recover an old
+UID whose source metadata has been lost or repair arbitrary broken path references.
+The editor may execute plugins and `@tool` scripts and create source sidecars.
+Exit codes are 0 for a successful import, 1 for engine/import errors, and 2 for
+setup failures. Refresh reports raw engine diagnostics, including errors that
+`check.ignore_import_errors` would suppress during validation.
+
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
 Importing can update the project's Godot caches. It exits 1 when Godot reports an

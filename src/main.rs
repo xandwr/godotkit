@@ -1,4 +1,5 @@
 mod api;
+mod cache;
 mod check;
 mod cli;
 mod doctor;
@@ -172,6 +173,8 @@ fn main() -> ExitCode {
         };
     }
     let result = match Cli::parse().command {
+        Command::Cache(args) => cache::run(args),
+        Command::Import(args) => cache::refresh(args),
         Command::Api(args) => api::run(args),
         Command::Autoloads(args) => autoloads(args),
         Command::Init(args) => engine::init(args),

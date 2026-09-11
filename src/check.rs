@@ -427,7 +427,11 @@ fn structured_diagnostics(
     diagnostics
 }
 
-fn engine_output(engine: &Path, project: &Path, args: &[&OsStr]) -> io::Result<CapturedOutput> {
+pub(crate) fn engine_output(
+    engine: &Path,
+    project: &Path,
+    args: &[&OsStr],
+) -> io::Result<CapturedOutput> {
     let mut command = Command::new(engine);
     command
         .args([OsStr::new("--headless"), OsStr::new("--no-header")])
