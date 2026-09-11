@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     env,
     error::Error,
     ffi::OsStr,
@@ -867,7 +867,11 @@ fn harness_result(output: &CapturedOutput) -> Result<HarnessResult, Box<dyn Erro
     Ok(serde_json::from_str(result)?)
 }
 
-fn print_summary(failed: bool, counts: Option<&Counts>) -> io::Result<()> {
+fn print_summary(
+    failed: bool,
+    resource_loading_passed: bool,
+    counts: Option<&Counts>,
+) -> io::Result<()> {
     let (color, status) = if failed {
         (31, "check failed")
     } else {
@@ -878,11 +882,22 @@ fn print_summary(failed: bool, counts: Option<&Counts>) -> io::Result<()> {
     if let Some(counts) = counts {
         write!(
             output,
-            ": checked {} scripts, {} scenes, {} resources",
-            counts.scripts, counts.scenes, counts.resources
+            ": resource validation {} {}, {}, {}",
+            if resource_loading_passed {
+                "loaded"
+            } else {
+                "attempted"
+            },
+            count_label(counts.scripts, "script"),
+            count_label(counts.scenes, "scene"),
+            count_label(counts.resources, "resource")
         )?;
     }
     writeln!(output, "\x1b[0m")
+}
+
+fn count_label(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 struct ExecutionSummary {
@@ -890,6 +905,61 @@ struct ExecutionSummary {
     smoke_count: usize,
     strict_methods: bool,
     script_count: usize,
+}
+
+fn runtime_summary(report: &CheckReport, summary: &ExecutionSummary) -> String {
+    let requested_scripts = report
+        .requested_phases
+        .iter()
+        .filter(|phase| phase.kind == CheckPhase::ProjectScript)
+        .count();
+    let requested_scenes = report
+        .requested_phases
+        .iter()
+        .filter(|phase| phase.kind == CheckPhase::SceneSmoke)
+        .count();
+    if requested_scripts == 0 && requested_scenes == 0 {
+        return "runtime execution: none requested".into();
+    }
+    let mut executed = Vec::new();
+    if requested_scripts > 0 {
+        executed.push(format!(
+            "{}/{} project script{}",
+            summary.script_count,
+            requested_scripts,
+            if requested_scripts == 1 { "" } else { "s" }
+        ));
+    }
+    if requested_scenes > 0 {
+        executed.push(format!(
+            "{}/{} gameplay scene smoke check{}",
+            summary.smoke_count,
+            requested_scenes,
+            if requested_scenes == 1 { "" } else { "s" }
+        ));
+    }
+    let mut text = format!("runtime execution: ran {}", executed.join(" and "));
+    let runtime_skips: Vec<_> = report
+        .skipped_phases
+        .iter()
+        .filter(|skipped| {
+            matches!(
+                skipped.phase.kind,
+                CheckPhase::ProjectScript | CheckPhase::SceneSmoke
+            )
+        })
+        .collect();
+    if !runtime_skips.is_empty() {
+        let reasons: BTreeSet<_> = runtime_skips
+            .iter()
+            .map(|skipped| skipped.reason.as_str())
+            .collect();
+        text.push_str(&format!("; {} skipped", runtime_skips.len()));
+        if reasons.len() == 1 {
+            text.push_str(&format!(" ({})", reasons.first().unwrap()));
+        }
+    }
+    text
 }
 
 fn exit_code(outcome: CheckOutcome) -> ExitCode {
@@ -913,20 +983,23 @@ fn emit_report(
             if let Some(summary) = summary {
                 print_summary(
                     report.outcome != CheckOutcome::Passed,
+                    !report.failures.iter().any(|failure| {
+                        failure
+                            .phase
+                            .as_ref()
+                            .is_some_and(|phase| phase.kind == CheckPhase::ResourceLoading)
+                    }),
                     summary.counts.as_ref(),
                 )?;
-                if summary.counts.is_some() {
-                    eprintln!(
-                        "coverage: resource loading{}; {} project scripts and {} scene smoke checks executed",
-                        if summary.strict_methods {
-                            " and strict method validation"
-                        } else {
-                            " (project warning policy)"
-                        },
-                        summary.script_count,
-                        summary.smoke_count
-                    );
-                }
+                println!("{}", runtime_summary(report, summary));
+                println!(
+                    "validation policy: {}",
+                    if summary.strict_methods {
+                        "strict method validation"
+                    } else {
+                        "project warning policy"
+                    }
+                );
             }
         }
     }
@@ -1361,6 +1434,7 @@ fn run_project(
 
     let mut script_count = 0;
     let mut smoke_count = 0;
+    let mut attempted_runtime_phases = HashSet::new();
     if !failed {
         for (index, script) in scripts.iter().enumerate() {
             let script_phase = report
@@ -1374,6 +1448,7 @@ fn run_project(
                 })
                 .cloned()
                 .ok_or("project script phase was not registered")?;
+            attempted_runtime_phases.insert(script_phase.id.clone());
             let label = format!("Project script {}", args.script[index]);
             let output = script_output(&engine, project, script, args.script_timeout)?;
             report.artifacts.extend(artifacts.preserve(
@@ -1432,6 +1507,7 @@ fn run_project(
                 })
                 .cloned()
                 .ok_or("scene smoke phase was not registered")?;
+            attempted_runtime_phases.insert(smoke_phase.id.clone());
             let phase = format!("Scene smoke {}", scene.display());
             let output = smoke_output(
                 &engine,
@@ -1494,6 +1570,7 @@ fn run_project(
                     phase.kind,
                     CheckPhase::SceneSmoke | CheckPhase::ProjectScript
                 ) && !report.completed_phases.contains(phase)
+                    && !attempted_runtime_phases.contains(&phase.id)
                     && !report
                         .skipped_phases
                         .iter()
@@ -1881,5 +1958,54 @@ mod tests {
         assert_eq!(malformed.len(), 1);
         assert!(malformed[0].message.contains("cache is unreadable"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn runtime_summary_distinguishes_unrequested_executed_and_skipped_checks() {
+        let mut report = CheckReport::new(
+            ProjectSnapshot {
+                root: PathBuf::from("game"),
+                fingerprint: "project".into(),
+            },
+            CheckPolicy {
+                strict_methods: false,
+                fresh_import: false,
+                ignored_import_diagnostics: 0,
+            },
+        );
+        let empty = ExecutionSummary {
+            counts: None,
+            smoke_count: 0,
+            strict_methods: false,
+            script_count: 0,
+        };
+        assert_eq!(
+            runtime_summary(&report, &empty),
+            "runtime execution: none requested"
+        );
+
+        report.requested_phases = vec![
+            phase("project_script:1:first.gd", CheckPhase::ProjectScript),
+            phase("project_script:2:second.gd", CheckPhase::ProjectScript),
+            phase("scene_smoke:1:main.tscn", CheckPhase::SceneSmoke),
+        ];
+        report.skipped_phases.push(SkippedPhase {
+            phase: report.requested_phases[1].clone(),
+            reason: "an earlier phase failed".into(),
+        });
+        report.skipped_phases.push(SkippedPhase {
+            phase: report.requested_phases[2].clone(),
+            reason: "an earlier phase failed".into(),
+        });
+        let partial = ExecutionSummary {
+            counts: None,
+            smoke_count: 0,
+            strict_methods: false,
+            script_count: 1,
+        };
+        assert_eq!(
+            runtime_summary(&report, &partial),
+            "runtime execution: ran 1/2 project scripts and 0/1 gameplay scene smoke check; 2 skipped (an earlier phase failed)"
+        );
     }
 }

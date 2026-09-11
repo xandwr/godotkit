@@ -64,7 +64,7 @@ fn checks_project_scripts_scenes_and_resources() {
     );
     fs::write(
         directory.join("player.gd"),
-        "extends Node\n\nvar health: int = 100\n",
+        "class_name CheckPlayer extends Node\n\nvar health: int = 100\n",
     )
     .unwrap();
     fs::write(
@@ -102,7 +102,11 @@ fn checks_project_scripts_scenes_and_resources() {
     }
     assert_eq!(
         String::from_utf8(clean.stdout).unwrap(),
-        "check passed: checked 1 scripts, 1 scenes, 1 resources\n"
+        concat!(
+            "check passed: resource validation loaded 1 script, 1 scene, 1 resource\n",
+            "runtime execution: none requested\n",
+            "validation policy: project warning policy\n",
+        )
     );
     let json = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .env_remove("GDKIT_GODOT")
@@ -132,6 +136,64 @@ fn checks_project_scripts_scenes_and_resources() {
         "extends SceneTree\n\nfunc _initialize() -> void:\n\tprint(\"contract passed\")\n\tquit(0)\n",
     )
     .unwrap();
+    let scripted = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env("NO_COLOR", "1")
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "check",
+            directory.to_str().unwrap(),
+            "--script",
+            "res://contract.gd",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        scripted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&scripted.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(scripted.stdout).unwrap(),
+        concat!(
+            "check passed: resource validation loaded 2 scripts, 1 scene, 1 resource\n",
+            "runtime execution: ran 1/1 project script\n",
+            "validation policy: project warning policy\n",
+        )
+    );
+    fs::write(
+        directory.join("failing_contract.gd"),
+        "extends SceneTree\n\nfunc _initialize() -> void:\n\tquit(1)\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("skipped_contract.gd"),
+        "extends SceneTree\n\nfunc _initialize() -> void:\n\tquit(0)\n",
+    )
+    .unwrap();
+    let partial = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env("NO_COLOR", "1")
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "check",
+            directory.to_str().unwrap(),
+            "--script",
+            "res://failing_contract.gd",
+            "--script",
+            "res://skipped_contract.gd",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(partial.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(partial.stdout).unwrap(),
+        concat!(
+            "check failed: resource validation loaded 4 scripts, 1 scene, 1 resource\n",
+            "runtime execution: ran 1/2 project scripts; 1 skipped (an earlier phase failed)\n",
+            "validation policy: project warning policy\n",
+        )
+    );
+    fs::remove_file(directory.join("failing_contract.gd")).unwrap();
+    fs::remove_file(directory.join("skipped_contract.gd")).unwrap();
     let isolated = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .env_remove("GDKIT_GODOT")
         .args([
@@ -183,7 +245,11 @@ fn checks_project_scripts_scenes_and_resources() {
     assert!(!String::from_utf8_lossy(&colored.stderr).contains("timing:"));
     assert_eq!(
         String::from_utf8(colored.stdout).unwrap(),
-        "\x1b[32mcheck passed: checked 1 scripts, 1 scenes, 1 resources\x1b[0m\n"
+        concat!(
+            "\x1b[32mcheck passed: resource validation loaded 1 script, 1 scene, 1 resource\x1b[0m\n",
+            "runtime execution: none requested\n",
+            "validation policy: project warning policy\n",
+        )
     );
 
     fs::write(
@@ -239,7 +305,9 @@ fn checks_project_scripts_scenes_and_resources() {
         .unwrap();
     assert_eq!(invalid_script.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&invalid_script.stdout).starts_with("\x1b[31mcheck failed:"));
-    assert!(String::from_utf8_lossy(&invalid_script.stdout).ends_with("\x1b[0m\n"));
+    assert!(String::from_utf8_lossy(&invalid_script.stdout).ends_with(
+        "\x1b[0m\nruntime execution: none requested\nvalidation policy: project warning policy\n"
+    ));
     assert!(String::from_utf8_lossy(&invalid_script.stderr).contains("broken.gd"));
     fs::write(
         directory.join("broken.gd"),

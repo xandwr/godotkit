@@ -215,8 +215,10 @@ A base-typed object can have a script or subclass with additional methods, so
 strict checking can reject intentional dynamic calls too. Give the receiver its
 actual custom type or explicitly suppress the diagnostic at the intentional call.
 This is engine semantic validation, not a guarantee of runtime correctness.
-Ordinary checks continue to use the project's warning policy. The coverage line
-states which policy was checked and whether gameplay scenes were entered.
+Ordinary checks continue to use the project's warning policy. Human output gives
+resource validation and runtime execution separate summary lines, then states the
+validation policy. A default check reports `runtime execution: none requested`;
+it does not imply that loaded scripts ran as tests or that gameplay scenes started.
 
 Use `gdkit check game --scene res://scenes/match_lobby/match_lobby.tscn` to
 add a headless runtime smoke check after resource validation succeeds. Repeat
@@ -282,8 +284,11 @@ checks measured 489-499 ms with the existing broken Steam editor plugin disabled
 only in the benchmark copy; all 82 selected files were still checked.
 
 The final summary explicitly says `check passed` or `check failed`, colored green
-or red in a terminal. Redirected output is plain text by default; `NO_COLOR`
-disables color.
+or red in a terminal, and labels the scripts, scenes, and resources as loaded by
+resource validation. A separate runtime line reports requested and executed
+project scripts and gameplay scene smoke checks, including skips caused by an
+earlier failure. Redirected output is plain text by default; `NO_COLOR` disables
+color.
 
 Diagnostics are grouped by import and resource loading, with shutdown allocation
 reports collected separately after other messages. Cleanup `ERROR` entries still
