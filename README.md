@@ -109,7 +109,11 @@ cargo test --test check -- --include-ignored
 ```
 
 `scene-tree` reads a Godot text scene and prints its literal node hierarchy without
-loading the project or running Godot. Native types, attached scripts, scene
+loading the project or running Godot. Scene parsing, expansion, and tree rendering
+are provided by `gdview`, re-exported as `gdkit::scene` for library compatibility.
+The structured `gdkit::scene::expand(path, depth)` API also exposes the expanded
+hierarchy without rendering it. CLI arguments and output handling remain in gdkit.
+Native types, attached scripts, scene
 instances, and owner-unique names are included while serialized properties and
 resource contents are omitted. Nodes inherited from a base scene are identified
 when their type is not present in the text scene. `--expand` recursively resolves
@@ -117,6 +121,8 @@ packed scene instances and inherited base scenes, while `--expand-depth` limits
 resolution to a specific number of instance edges. Expanded nodes include their
 origin scene. Expansion depths are capped at 64, cycles are rejected, and
 `res://` paths are resolved from the nearest ancestor containing `project.godot`.
+Expansion reports invalid project markers and project-discovery I/O failures;
+relative scene references still work without an enclosing project.
 
 Use `--connections` to show outgoing signal connections beneath each source node,
 and `--groups` to show saved group memberships. Both switches can be combined

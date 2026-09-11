@@ -165,7 +165,7 @@ dependencies = [
 [[package]]
 name = "gdview"
 version = "0.1.0"
-source = "git+https://github.com/xandwr/gdview?rev=9492ed30e433b684bdfa34d7f3aaaa7ff786e58f#9492ed30e433b684bdfa34d7f3aaaa7ff786e58f"
+source = "git+https://github.com/xandwr/gdview?rev=da0853ca53a3388ac1e5caebe72f893d8c21f790#da0853ca53a3388ac1e5caebe72f893d8c21f790"
 dependencies = [
  "thiserror",
  "unicode-ident",

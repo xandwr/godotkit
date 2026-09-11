@@ -1,3 +1,2 @@
 pub mod formatter;
-pub mod scene;
-pub use gdview::syntax;
+pub use gdview::{scene, syntax};

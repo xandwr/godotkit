@@ -5,7 +5,7 @@ as `gdkit::syntax`. Its syntax kinds, grammar productions, and indentation
 handling are adapted from gdscript-syntax in reactive-ui-toolkit/gdscript-analyzer.
 
 Dependency: https://github.com/xandwr/gdview
-Revision: 9492ed30e433b684bdfa34d7f3aaaa7ff786e58f
+Revision: da0853ca53a3388ac1e5caebe72f893d8c21f790
 
 Source: https://github.com/reactive-ui-toolkit/gdscript-analyzer
 Revision: f5f70e1c35e1eff93658a4f3e8de01b889bbfee0
