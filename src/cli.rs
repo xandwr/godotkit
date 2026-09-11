@@ -17,6 +17,8 @@ pub enum Command {
     Init(InitArgs),
     #[command(about = "Check a Godot project with its configured engine")]
     Check(CheckArgs),
+    #[command(about = "Explain a Godot project's gdkit environment")]
+    Doctor(DoctorArgs),
     #[command(about = "Format a GDScript source file")]
     Format(FormatArgs),
     #[command(about = "Format every GDScript file in the current Godot project")]
@@ -85,6 +87,14 @@ pub struct CheckArgs {
         help = "Stop this project's background import editor without checking"
     )]
     pub stop_worker: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

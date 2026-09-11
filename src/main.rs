@@ -1,5 +1,6 @@
 mod check;
 mod cli;
+mod doctor;
 mod engine;
 mod import_worker;
 mod process;
@@ -170,6 +171,7 @@ fn main() -> ExitCode {
         Command::Autoloads(args) => autoloads(args),
         Command::Init(args) => engine::init(args),
         Command::Check(args) => check::run(args),
+        Command::Doctor(args) => doctor::run(args),
         Command::Format(args) => format(args),
         Command::FormatProject(args) => format_project(args),
         Command::SceneTree(args) => scene_tree(args),

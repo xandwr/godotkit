@@ -26,6 +26,22 @@ struct Worker {
     diagnostics: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkerState {
+    None,
+    Running,
+    Stale,
+    Unknown,
+    Malformed,
+}
+
+pub(crate) struct WorkerInspection {
+    pub(crate) state: WorkerState,
+    pub(crate) pid: Option<u32>,
+    pub(crate) current: Option<bool>,
+    pub(crate) diagnostics: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct Response {
     diagnostics: String,
@@ -105,6 +121,89 @@ fn inputs(project: &Path, engine: &Path) -> Result<(u64, BTreeMap<String, u64>),
         }
     }
     Ok((hash(settings), scripts))
+}
+
+#[cfg(windows)]
+fn worker_is_running(pid: u32) -> Option<bool> {
+    unsafe {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, WAIT_TIMEOUT},
+            System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+        };
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return Some(false);
+        }
+        let running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        CloseHandle(handle);
+        Some(running)
+    }
+}
+
+#[cfg(not(windows))]
+fn worker_is_running(_pid: u32) -> Option<bool> {
+    None
+}
+
+pub(crate) fn inspect(project: &Path, engine: &Path) -> WorkerInspection {
+    let record = project.join(".godot/gdkit/import-worker.json");
+    let bytes = match fs::read(record) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return WorkerInspection {
+                state: WorkerState::None,
+                pid: None,
+                current: None,
+                diagnostics: Vec::new(),
+            };
+        }
+        Err(_) => {
+            return WorkerInspection {
+                state: WorkerState::Unknown,
+                pid: None,
+                current: None,
+                diagnostics: Vec::new(),
+            };
+        }
+    };
+    let worker = match serde_json::from_slice::<Worker>(&bytes) {
+        Ok(worker) => worker,
+        Err(_) => {
+            return WorkerInspection {
+                state: WorkerState::Malformed,
+                pid: None,
+                current: None,
+                diagnostics: Vec::new(),
+            };
+        }
+    };
+    let state = match worker_is_running(worker.pid) {
+        Some(true) => WorkerState::Running,
+        Some(false) => WorkerState::Stale,
+        None => WorkerState::Unknown,
+    };
+    let current = inputs(project, engine)
+        .ok()
+        .map(|(key, _)| key == worker.key);
+    let diagnostics = worker
+        .diagnostics
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            line.starts_with("ERROR:") || line.starts_with("SCRIPT ERROR:")
+        })
+        .map(str::to_owned)
+        .collect();
+    WorkerInspection {
+        state,
+        pid: Some(worker.pid),
+        current,
+        diagnostics,
+    }
+}
+
+pub(crate) fn compatibility_issue(project: &Path, engine: &Path) -> Option<String> {
+    inputs(project, engine).err().map(|error| error.to_string())
 }
 
 fn request(worker: &Worker, changed: &[String], stop: bool) -> Result<Response, Box<dyn Error>> {

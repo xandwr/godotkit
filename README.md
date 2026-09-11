@@ -60,6 +60,11 @@ their companion engine executable when present. Failed probes are never cached;
 missing, unreadable, or malformed caches trigger a fresh probe. Cache write
 failures do not prevent checking. Delete the cache file to force a fresh probe.
 
+Run `gdkit doctor [project]` to explain the resolved project and engine, exact
+engine version, selection source, compatibility-probe cache health, import-worker
+state, effective check warning policy, and likely project-specific gotchas. Like
+`check`, it accepts `--godot`; otherwise the normal selection precedence applies.
+
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
 Importing can update the project's Godot caches. It exits 1 when Godot reports an

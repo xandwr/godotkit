@@ -21,6 +21,22 @@ pub(crate) struct Config {
     pub(crate) check: CheckConfig,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectionSource {
+    CommandLine,
+    Environment,
+    ProjectConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProbeCacheHealth {
+    Missing,
+    Current,
+    Stale,
+    Malformed,
+    Unreadable,
+}
+
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CheckConfig {
@@ -94,6 +110,26 @@ pub(crate) struct ProbeKey {
 struct CachedProbe {
     key: ProbeKey,
     version: String,
+}
+
+pub(crate) fn probe_cache_health(engine: &Path, project: &Path) -> ProbeCacheHealth {
+    let cache = project.join(".godot/gdkit/engine-probe.json");
+    let bytes = match fs::read(&cache) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ProbeCacheHealth::Missing;
+        }
+        Err(_) => return ProbeCacheHealth::Unreadable,
+    };
+    let cached = match serde_json::from_slice::<CachedProbe>(&bytes) {
+        Ok(cached) if !cached.version.is_empty() => cached,
+        _ => return ProbeCacheHealth::Malformed,
+    };
+    match probe_key(engine) {
+        Ok(key) if cached.key == key => ProbeCacheHealth::Current,
+        Ok(_) => ProbeCacheHealth::Stale,
+        Err(_) => ProbeCacheHealth::Unreadable,
+    }
 }
 
 pub(crate) fn probe_key(engine: &Path) -> std::io::Result<ProbeKey> {
@@ -210,18 +246,28 @@ pub(crate) fn display_path(path: &Path) -> String {
 }
 
 pub fn resolve(project: &Path, explicit: Option<&Path>) -> Result<PathBuf, Box<dyn Error>> {
-    let path = if let Some(path) = explicit {
-        path.to_owned()
+    resolve_selected(project, explicit).map(|(path, _)| path)
+}
+
+pub(crate) fn resolve_selected(
+    project: &Path,
+    explicit: Option<&Path>,
+) -> Result<(PathBuf, SelectionSource), Box<dyn Error>> {
+    let (path, source) = if let Some(path) = explicit {
+        (path.to_owned(), SelectionSource::CommandLine)
     } else if let Some(path) = env::var_os("GDKIT_GODOT") {
-        PathBuf::from(path)
+        (PathBuf::from(path), SelectionSource::Environment)
     } else {
         let config = read_config(project)?.ok_or("no engine configured; run gdkit init --godot <path> in the project, or supply --godot or GDKIT_GODOT")?;
-        project.join(config.engine.executable)
+        (
+            project.join(config.engine.executable),
+            SelectionSource::ProjectConfig,
+        )
     };
     if !path.is_file() {
         return Err(format!("Godot executable not found: {}", path.display()).into());
     }
-    Ok(fs::canonicalize(path)?)
+    Ok((fs::canonicalize(path)?, source))
 }
 
 pub fn probe(engine: &Path) -> Result<String, Box<dyn Error>> {
@@ -384,6 +430,35 @@ mod tests {
         })
         .unwrap();
         assert!(!cache.exists());
+    }
+
+    #[test]
+    fn reports_probe_cache_health() {
+        let directory = env::temp_dir().join(format!("gdkit-probe-health-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let _cleanup = ProbeDirectory(directory.clone());
+        let engine = directory.join("engine.exe");
+        let cache = directory.join(".godot/gdkit/engine-probe.json");
+        fs::write(&engine, "engine").unwrap();
+        assert_eq!(
+            probe_cache_health(&engine, &directory),
+            ProbeCacheHealth::Missing
+        );
+        cached_probe(&engine, &cache, |_| Ok("4.test".into())).unwrap();
+        assert_eq!(
+            probe_cache_health(&engine, &directory),
+            ProbeCacheHealth::Current
+        );
+        fs::write(&engine, "changed engine").unwrap();
+        assert_eq!(
+            probe_cache_health(&engine, &directory),
+            ProbeCacheHealth::Stale
+        );
+        fs::write(&cache, "partial json").unwrap();
+        assert_eq!(
+            probe_cache_health(&engine, &directory),
+            ProbeCacheHealth::Malformed
+        );
     }
 
     #[test]

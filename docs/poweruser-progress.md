@@ -131,11 +131,12 @@ termination in `src/process.rs`; direct check processes migrated (partial M02.01
 
 [Roadmap section 3](poweruser-roadmap.md#3-api-lookup-from-the-selected-engine).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
+Status: In progress | Owner: Codex | Started: 2026-09-10 | Target: - | Completed: -
 Blocker: None recorded. Evidence / commits: None recorded.
 
-- [ ] M03.01 Implement `gdkit doctor` with engine selection source, actual executable,
-  version, capabilities, worker state, import problems, and relevant warning policy.
+- [x] M03.01 Implement `gdkit doctor` with engine selection source, actual executable,
+  version, probe-cache health, worker state, cached import problems, relevant warning
+  policy, and project gotchas. Capability inventory remains in M03.02-M03.03.
 - [ ] M03.02 Probe option/capability support instead of trusting version strings or
   apparent acceptance of unknown CLI arguments.
 - [ ] M03.03 Identify unsupported capabilities and direct mismatch guidance to the
@@ -460,4 +461,5 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 | 2026-09-10 | M01.03, M02.01-M02.02 partial | Added shared live stdout/stderr capture with observed ordering, timestamps, process identity, exact stream reconstruction, and deadlines; migrated fresh import, resource loading, and smoke processes | `src/process.rs`, `src/check.rs`; populate reports from captured events and migrate probe/worker lifecycle paths |
 | 2026-09-10 | M01.03 partial | Retained byte-exact stdout/stderr for each executed engine phase and made human diagnostic consolidation report occurrence counts | `src/check.rs`; replace post-exit stream grouping with ordered shared capture before completing M01.03 |
 | 2026-09-10 | M01.01-M01.02 | Added the versioned report and diagnostic data contract with stable JSON names and round-trip coverage | `src/report.rs`; next integrate ordered capture and raw artifacts |
+| 2026-09-10 | M03.01 | Added `gdkit doctor` for resolved engine identity and source, probe-cache health, worker freshness, warning policy, and detected project gotchas | `src/doctor.rs`, `src/engine.rs`, `src/import_worker.rs`, `tests/doctor.rs`; next add capability inventory and common report output |
 | 2026-09-10 | Tracker | Established 12 planned milestones, acceptance checks, and two decision gates from the roadmap; no new delivery claimed | Begin M01 and record implementation evidence |
