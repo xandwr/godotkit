@@ -19,6 +19,10 @@ cargo run -- api CharacterBody3D move_and_slide
 cargo run -- api search multiplayer
 cargo run -- check /path/to/project
 cargo run -- check /path/to/project --isolated --script res://tests/contract.gd
+cargo run -- run --name server --headless -- --server
+cargo run -- sessions
+cargo run -- logs server
+cargo run -- stop server
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
@@ -208,6 +212,27 @@ the default display; project source locations remain visible. Use `gdkit check
 --verbose` to also print the full captured Godot output.
 
 Engine selection does not change the syntax supported by the gdview formatter.
+
+## Named runtime sessions
+
+`gdkit run --name client` launches the configured engine and returns immediately.
+Windowed play is the default; `--headless` is explicit. Supply `--scene
+res://path/to/scene.tscn` to override the main scene, and place project arguments
+after `--`, for example `gdkit run --name server --headless -- --server`.
+
+Each launch creates an immutable generation record under
+`.godot/gdkit/sessions`, containing the project, engine and version, scene,
+arguments, launch mode, PID, process creation identity, and combined log path.
+The creation identity prevents `stop` from targeting an unrelated process if an
+old PID has been reused. Session selectors accept either the latest generation
+by name or an exact `name@generation` printed by `run`.
+
+Use `gdkit sessions` to list the latest generation of each name and its current
+status. `--all` includes superseded generations. `gdkit logs <session>` prints
+the retained combined log, `gdkit stop <session>` stops a matching live process,
+and `gdkit restart <session>` launches the recorded engine, scene, arguments,
+and mode as a new generation. These commands only operate on records belonging
+to the selected project.
 
 `autoloads` finds the nearest enclosing Godot project and prints its saved
 autoload initialization order with zero-based indices, names, singleton status,

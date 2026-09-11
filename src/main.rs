@@ -6,6 +6,7 @@ mod engine;
 mod import_worker;
 mod process;
 mod project_files;
+mod session;
 
 use std::{
     error::Error,
@@ -177,6 +178,11 @@ fn main() -> ExitCode {
         Command::Format(args) => format(args),
         Command::FormatProject(args) => format_project(args),
         Command::SceneTree(args) => scene_tree(args),
+        Command::Run(args) => session::run(args),
+        Command::Sessions(args) => session::list(args),
+        Command::Logs(args) => session::logs(args),
+        Command::Stop(args) => session::stop(args),
+        Command::Restart(args) => session::restart(args),
     };
     match result {
         Ok(code) => code,

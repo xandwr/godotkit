@@ -40,7 +40,7 @@ independent design work can proceed before prerequisite implementations finish.
 | 2 | [M02 Process supervisor](#m02-process-supervisor) | P0 | In progress | M01 contract | Bounded operations, cancellation, owned-process cleanup |
 | 3 | [M03 Doctor](#m03-doctor) | P1 | Planned | M01, M02 | Explain selected engine, capabilities, and worker health |
 | 4 | [M04 Native API lookup](#m04-native-api-lookup) | P1 | In progress | M02, M03 identity/capabilities | Correct inherited signatures on official/custom engines |
-| 5 | [M05 Named sessions](#m05-named-sessions) | P1 | Planned | M01, M02 | Launch, logs, status, stop, restart, stale-session rejection |
+| 5 | [M05 Named sessions](#m05-named-sessions) | P1 | In progress | M01, M02 | Launch, logs, status, stop, restart, stale-session rejection |
 | 6 | [M06 Runtime probe](#m06-runtime-probe) | P1 | Planned | M03, M05 | Fresh observations and verified startup coverage |
 | 7 | [M07 Project graph](#m07-project-graph) | P1 | In progress | M01, engine identity, gdview | Source-backed references, UIDs, inheritance, overrides |
 | 8 | [M08 Scenario protocol](#m08-scenario-protocol) | P2 | In progress | M01, M02, M05; G1 for bridge use | Signal readiness, bounded assertions, failure artifacts |
@@ -171,16 +171,15 @@ Blocker: None recorded. Evidence / commits: pending current commit.
 [Roadmap section 4](poweruser-roadmap.md#4-named-runtime-sessions).
 
 Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: Project-owned `SceneTree` scripts now
-run through `gdkit check --script` with deadlines, diagnostics, and durable phase
-artifacts. `--isolated` provides a fresh temporary project without changing the
-source project's imported state. Named protocol messages and readiness remain.
+Blocker: None recorded. Evidence / commits: `run`, `sessions`, `logs`, `stop`,
+and `restart` use immutable generation records, combined logs, and process
+creation identity. Renderer and source fingerprint recording remain.
 
 - [ ] M05.01 Define durable session records: project, engine, scene, arguments,
   renderer, run ID, source fingerprint, logs, generation, and lifecycle.
-- [ ] M05.02 Implement `run`, `sessions`, and `stop`, with logs/status/restart workflows
+- [x] M05.02 Implement `run`, `sessions`, and `stop`, with logs/status/restart workflows
   and retained identity for later commands.
-- [ ] M05.03 Make windowed play first-class and headless interactive runs explicit.
+- [x] M05.03 Make windowed play first-class and headless interactive runs explicit.
 - [ ] M05.04 Reject stale session/generation references, including IDs from a prior
   restart; use the supervisor for cancellation, deadlines, and ownership.
 - [ ] M05.05 Validate launch, failure, logs, status, stop, restart, multiple concurrent
@@ -216,8 +215,10 @@ and source locations with gdview. Scene/resource nodes and reference edges remai
 
 [Roadmap section 5](poweruser-roadmap.md#5-scene-and-resource-intelligence).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: The API command now indexes named
+project script classes, declarations, script inheritance, native base fallback,
+and source locations with gdview. Scene/resource nodes and reference edges remain.
 
 - [ ] M07.01 Build typed nodes for scripts, scenes, external/subresources, UIDs,
   native types, script classes, and autoloads using gdview and engine resolution.
@@ -240,8 +241,11 @@ Blocker: None recorded. Evidence / commits: None recorded.
 
 [Roadmap section 6](poweruser-roadmap.md#6-reproducible-scenarios-and-multiplayer).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: Project-owned `SceneTree` scripts now
+run through `gdkit check --script` with deadlines, diagnostics, and durable phase
+artifacts. `--isolated` provides a fresh temporary project without changing the
+source project's imported state. Named protocol messages and readiness remain.
 
 - [ ] M08.01 Define opt-in named scenarios using project-owned fixture scenes and
   setup, ready, checkpoint, assertion, finish messages.
@@ -462,6 +466,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-11 | M05.01-M05.05 partial | Added durable named run sessions with exact generation selectors, combined logs, live status, identity-checked stop, and restart; windowed runs are default and headless is explicit | `src/session.rs`, `tests/sessions.rs`; validated launch, concurrent sessions, duplicate rejection, logs, status, stop, stale stop, restart, and history on custom Godot 4.7.3; next add source/renderer identity and shared supervisor integration |
 | 2026-09-11 | M07.01 partial | Added source-backed named GDScript classes and members to API lookup and search, including project inheritance and native base fallback | `src/api.rs`, `tests/api.rs`; validated with Pill Poppers domain classes on custom Godot 4.7.3; next build reference edges and resource nodes |
 | 2026-09-11 | M08.02-M08.03 partial | Added bounded project-owned script checks and isolated fresh-project execution through the common report and artifact pipeline | `src/check.rs`, `src/report.rs`, `tests/check.rs`; validated against Pill Poppers infrastructure contract on custom Godot 4.7.3; next define named scenario protocol |
 | 2026-09-10 | M01.03-M01.07 partial | Added final JSON check reports and persisted report artifacts with populated diagnostics, phase coverage, fingerprints, suppression counts, and exit-code outcomes | `src/check.rs`, `src/report.rs`, `tests/check.rs`; unit and local Godot validation; next migrate worker capture and add live stdout events |

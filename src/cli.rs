@@ -27,6 +27,16 @@ pub enum Command {
     FormatProject(FormatProjectArgs),
     #[command(about = "Print a compact tree for a Godot text scene")]
     SceneTree(SceneTreeArgs),
+    #[command(about = "Launch a durable named Godot session")]
+    Run(RunArgs),
+    #[command(about = "List named Godot sessions")]
+    Sessions(SessionsArgs),
+    #[command(about = "Print a named session's log")]
+    Logs(SessionArgs),
+    #[command(about = "Stop a named Godot session")]
+    Stop(SessionArgs),
+    #[command(about = "Restart a named Godot session")]
+    Restart(SessionArgs),
 }
 
 #[derive(Debug, Args)]
@@ -149,6 +159,46 @@ pub struct SceneTreeArgs {
     pub expand: bool,
     #[arg(long, value_name = "DEPTH", value_parser = clap::value_parser!(u8).range(1..=64), help = "Expand scene instances up to this depth")]
     pub expand_depth: Option<u8>,
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, help = "Durable session name")]
+    pub name: String,
+    #[arg(long, help = "Run without a window")]
+    pub headless: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Scene to launch instead of the project's main scene"
+    )]
+    pub scene: Option<String>,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
+    #[arg(
+        last = true,
+        allow_hyphen_values = true,
+        help = "Arguments passed to the project after --"
+    )]
+    pub arguments: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionsArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, help = "Include superseded session generations")]
+    pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionArgs {
+    #[arg(help = "Session name, or name@generation")]
+    pub session: String,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
 }
 
 #[derive(Debug, Args)]
