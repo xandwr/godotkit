@@ -40,6 +40,46 @@ fn run_scene_tree(path: &std::path::Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn run_autoloads(path: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .arg("autoloads")
+        .arg(path)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn prints_autoloads_in_saved_initialization_order() {
+    let directory = std::env::temp_dir().join(format!("gdkit-autoloads-{}", std::process::id()));
+    let nested = directory.join("scripts");
+    fs::create_dir_all(&nested).unwrap();
+    let source = r#"config_version=5
+
+[autoload]
+Events="*res://autoload/events.gd"
+Audio="res://autoload/audio.tscn"
+SaveManager="*res://autoload/save_manager.gd"
+"#;
+    fs::write(directory.join("project.godot"), source).unwrap();
+
+    let output = run_autoloads(&nested);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Autoloads (initialization order, zero-based):\n  0. Events [singleton] -> res://autoload/events.gd\n  1. Audio [node] -> res://autoload/audio.tscn\n  2. SaveManager [singleton] -> res://autoload/save_manager.gd\n"
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        fs::read_to_string(directory.join("project.godot")).unwrap(),
+        source
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn project_formatting_respects_monorepo_and_nested_gitignore_rules() {
     let repository = std::env::temp_dir().join(format!("gdkit-ignore-{}", std::process::id()));

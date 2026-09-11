@@ -16,7 +16,13 @@ use std::{
 use clap::{CommandFactory, Parser};
 use gdkit::formatter::{Options, format_source};
 
-use cli::{Cli, Command, FormatArgs, FormatProjectArgs, SceneTreeArgs};
+use cli::{AutoloadsArgs, Cli, Command, FormatArgs, FormatProjectArgs, SceneTreeArgs};
+
+fn autoloads(args: AutoloadsArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let project = gdview::Project::discover(args.path)?;
+    print!("{}", project.autoloads()?);
+    Ok(ExitCode::SUCCESS)
+}
 
 fn replace_file(path: &Path, original: &str, formatted: &str) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
@@ -161,6 +167,7 @@ fn main() -> ExitCode {
         };
     }
     let result = match Cli::parse().command {
+        Command::Autoloads(args) => autoloads(args),
         Command::Init(args) => engine::init(args),
         Command::Check(args) => check::run(args),
         Command::Format(args) => format(args),

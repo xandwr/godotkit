@@ -10,6 +10,7 @@ cargo run -- format script.gd --check
 cargo run -- format - < script.gd
 cargo run -- format-project
 cargo run -- format-project --check
+cargo run -- autoloads
 cargo run -- scene-tree scene.tscn
 cargo run -- scene-tree scene.tscn --expand
 cargo run -- scene-tree scene.tscn --expand-depth 2
@@ -162,6 +163,16 @@ the default display; project source locations remain visible. Use `gdkit check
 --verbose` to also print the full captured Godot output.
 
 Engine selection does not change the syntax supported by the gdview formatter.
+
+`autoloads` finds the nearest enclosing Godot project and prints its saved
+autoload initialization order with zero-based indices, names, singleton status,
+and decoded resource paths. It reads `project.godot` through gdview without
+loading the project or checking whether referenced resources exist. An optional
+path can select another project or a location inside one:
+
+```sh
+gdkit autoloads /path/to/project
+```
 
 To tolerate a known third-party editor plugin error, add a narrowly scoped import
 exception to the project's `gdkit.toml`:

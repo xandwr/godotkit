@@ -11,6 +11,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = "Print autoload initialization order")]
+    Autoloads(AutoloadsArgs),
     #[command(about = "Associate the current Godot project with an engine")]
     Init(InitArgs),
     #[command(about = "Check a Godot project with its configured engine")]
@@ -21,6 +23,12 @@ pub enum Command {
     FormatProject(FormatProjectArgs),
     #[command(about = "Print a compact tree for a Godot text scene")]
     SceneTree(SceneTreeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AutoloadsArgs {
+    #[arg(default_value = ".", help = "Godot project or a path inside it")]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Args)]
