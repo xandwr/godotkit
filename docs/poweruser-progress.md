@@ -39,7 +39,7 @@ independent design work can proceed before prerequisite implementations finish.
 | 1 | [M01 Reports and diagnostics](#m01-reports-and-diagnostics) | P0 | In progress | Baseline | Stable structured outcomes and raw logs |
 | 2 | [M02 Process supervisor](#m02-process-supervisor) | P0 | In progress | M01 contract | Bounded operations, cancellation, owned-process cleanup |
 | 3 | [M03 Doctor](#m03-doctor) | P1 | Planned | M01, M02 | Explain selected engine, capabilities, and worker health |
-| 4 | [M04 Native API lookup](#m04-native-api-lookup) | P1 | Planned | M02, M03 identity/capabilities | Correct inherited signatures on official/custom engines |
+| 4 | [M04 Native API lookup](#m04-native-api-lookup) | P1 | In progress | M02, M03 identity/capabilities | Correct inherited signatures on official/custom engines |
 | 5 | [M05 Named sessions](#m05-named-sessions) | P1 | Planned | M01, M02 | Launch, logs, status, stop, restart, stale-session rejection |
 | 6 | [M06 Runtime probe](#m06-runtime-probe) | P1 | Planned | M03, M05 | Fresh observations and verified startup coverage |
 | 7 | [M07 Project graph](#m07-project-graph) | P1 | Planned | M01, engine identity, gdview | Source-backed references, UIDs, inheritance, overrides |
@@ -148,18 +148,18 @@ Blocker: None recorded. Evidence / commits: None recorded.
 
 [Roadmap section 3](poweruser-roadmap.md#3-api-lookup-from-the-selected-engine).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-10 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: pending current commit.
 
-- [ ] M04.01 Implement class/member queries and search, including
+- [x] M04.01 Implement class/member queries and search, including
   `api RichTextLabel`, `api RichTextLabel clear`, and `api search tornado`.
-- [ ] M04.02 Return signatures, inherited origin, properties, signals, enum values,
+- [x] M04.02 Return signatures, inherited origin, properties, signals, enum values,
   engine identity, and available metadata capabilities.
-- [ ] M04.03 Return useful nearby candidates for a missing native member; keep
+- [x] M04.03 Return useful nearby candidates for a missing native member; keep
   script-defined APIs separate and do not treat native misses as script-call proof.
-- [ ] M04.04 Key native metadata by engine and project extension configuration,
+- [x] M04.04 Key native metadata by engine and project extension configuration,
   including feature overrides; account for reduced release-build metadata.
-- [ ] M04.05 Validate inherited methods, custom classes, changed GDExtensions,
+- [x] M04.05 Validate inherited methods, custom classes, changed GDExtensions,
   same-path engine replacement, and consistency after cache rebuild.
 - [ ] M04.06 Validate official/custom engines without gameplay startup; any supplemental
   docs match the selected version and never override engine metadata.

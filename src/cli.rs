@@ -11,6 +11,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = "Query the configured engine's native API")]
+    Api(ApiArgs),
     #[command(about = "Print autoload initialization order")]
     Autoloads(AutoloadsArgs),
     #[command(about = "Associate the current Godot project with an engine")]
@@ -25,6 +27,18 @@ pub enum Command {
     FormatProject(FormatProjectArgs),
     #[command(about = "Print a compact tree for a Godot text scene")]
     SceneTree(SceneTreeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ApiArgs {
+    #[arg(value_name = "CLASS|search", help = "Native class name, or search")]
+    pub query: String,
+    #[arg(value_name = "MEMBER|TERM", help = "Member name, or search term")]
+    pub member: Option<String>,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

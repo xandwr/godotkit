@@ -15,6 +15,8 @@ cargo run -- scene-tree scene.tscn
 cargo run -- scene-tree scene.tscn --expand
 cargo run -- scene-tree scene.tscn --expand-depth 2
 cargo run -- init --godot /path/to/godot
+cargo run -- api CharacterBody3D move_and_slide
+cargo run -- api search multiplayer
 cargo run -- check /path/to/project
 cargo test
 cargo test --test godot -- --ignored
@@ -64,6 +66,22 @@ Run `gdkit doctor [project]` to explain the resolved project and engine, exact
 engine version, selection source, compatibility-probe cache health, import-worker
 state, effective check warning policy, and likely project-specific gotchas. Like
 `check`, it accepts `--godot`; otherwise the normal selection precedence applies.
+
+`gdkit api <class> [member]` reflects the configured engine's native `ClassDB`.
+Class queries print signatures, properties, signals, enum values, constants, and
+the full inherited surface with each inherited member's declaring class. Member
+queries walk that same inheritance chain and suggest nearby names for typos.
+`gdkit api search <term>` searches class and member names across the native API.
+Negative queries exit 1 and explicitly leave open the possibility of members
+added by scripts or subclasses.
+
+Every result identifies the actual engine executable and version. The index runs
+inside the selected project so registered GDExtension classes are included, but
+it does not enter a gameplay scene. Native metadata is cached at
+`.godot/gdkit/api-index.json` and invalidated by engine replacement, gdkit's
+reflection implementation, project feature settings, enabled extension lists,
+extension descriptors, and their referenced native library metadata. As with
+`check`, `--godot` overrides `GDKIT_GODOT`, which overrides `gdkit.toml`.
 
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
