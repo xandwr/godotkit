@@ -299,6 +299,19 @@ for example `network_session`, `lobby_state`, `round_state`, and
 Declaring an adapter does not execute it during `check`, `doctor`, or normal
 game startup.
 
+`gdkit inspect server --checkpoints` invokes the adapter inside that exact live
+session and prints the returned dictionaries. It records the session generation,
+adapter path, collection time, process and physics ticks, and adapter duration.
+`--net --checkpoints` collects both generic network state and project checkpoints.
+JSON output retains the dictionary values without assigning them gdkit-defined
+meaning.
+
+Checkpoint values may contain only JSON scalars, arrays, and string-keyed
+dictionaries. Collection accepts at most 32 checkpoints, 2,048 aggregate
+dictionary or array entries, eight levels of nesting, and 16 KiB per string or
+key, inside the existing 1 MiB response limit. Contract and limit failures are
+reported as a bounded checkpoint error and exit with status 1.
+
 `autoloads` finds the nearest enclosing Godot project and prints its saved
 autoload initialization order with zero-based indices, names, singleton status,
 and decoded resource paths. It reads `project.godot` through gdview without

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -252,11 +252,14 @@ pub struct SessionArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(ArgGroup::new("inspection").required(true).multiple(true).args(["net", "checkpoints"])))]
 pub struct InspectArgs {
     #[arg(help = "Session name, or name@generation")]
     pub session: String,
-    #[arg(long, required = true, help = "Observe live multiplayer state")]
+    #[arg(long, help = "Observe live multiplayer state")]
     pub net: bool,
+    #[arg(long, help = "Collect project-declared checkpoints")]
+    pub checkpoints: bool,
     #[arg(long, default_value = ".", help = "Godot project directory")]
     pub project: PathBuf,
     #[arg(

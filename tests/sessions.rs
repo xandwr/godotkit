@@ -35,6 +35,11 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
     )
     .unwrap();
     fs::write(
+        directory.join("gdkit.toml"),
+        "[engine]\nexecutable='unused'\n[inspect]\ncheckpoint_adapter='res://checkpoints.gd'\n",
+    )
+    .unwrap();
+    fs::write(
         directory.join("main.tscn"),
         "[gd_scene load_steps=2 format=3]\n\n[ext_resource type=\"Script\" path=\"res://main.gd\" id=\"1\"]\n\n[node name=\"Main\" type=\"Node\"]\nscript = ExtResource(\"1\")\n",
     )
@@ -42,6 +47,11 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
     fs::write(
         directory.join("main.gd"),
         "extends Node\n\nfunc _ready() -> void:\n\tprint(\"named session ready\")\n\tawait get_tree().process_frame\n\tawait get_tree().process_frame\n\tmultiplayer.peer_connected.emit(42)\n\tEngineDebugger.profiler_add_frame_data(&\"multiplayer:rpc\", [\"rpc_out\", get_instance_id(), 12])\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("checkpoints.gd"),
+        "extends RefCounted\n\nfunc collect_checkpoints(tree: SceneTree) -> Dictionary:\n\treturn {\n\t\t\"network_session\": {\"peer_id\": tree.get_multiplayer().get_unique_id()},\n\t\t\"lobby_state\": {\"revision\": 7, \"participants\": [1, 42]},\n\t\t\"round_state\": {\"phase\": \"active\"},\n\t\t\"local_player_state\": {\"alive\": true},\n\t}\n",
     )
     .unwrap();
     let engine = engine.to_string_lossy();
@@ -104,6 +114,65 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
             .as_u64()
             .unwrap()
             > 0
+    );
+
+    let checkpoints = run(
+        &directory,
+        &["inspect", "server", "--checkpoints", "--output", "json"],
+    );
+    assert!(
+        checkpoints.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checkpoints.stderr)
+    );
+    let checkpoints: serde_json::Value = serde_json::from_slice(&checkpoints.stdout).unwrap();
+    assert_eq!(checkpoints["checkpoints"]["status"], "collected");
+    assert_eq!(
+        checkpoints["checkpoints"]["adapter"],
+        "res://checkpoints.gd"
+    );
+    assert_eq!(
+        checkpoints["checkpoints"]["values"]["lobby_state"]["revision"],
+        7
+    );
+    assert_eq!(
+        checkpoints["checkpoints"]["values"]["round_state"]["phase"],
+        "active"
+    );
+    assert_eq!(checkpoints["checkpoints"]["limits"]["checkpoints"], 32);
+
+    let combined = run(
+        &directory,
+        &[
+            "inspect",
+            "server",
+            "--net",
+            "--checkpoints",
+            "--output",
+            "json",
+        ],
+    );
+    assert!(combined.status.success());
+    let combined: serde_json::Value = serde_json::from_slice(&combined.stdout).unwrap();
+    assert!(combined["observation"].is_object());
+    assert!(combined["checkpoints"].is_object());
+
+    fs::write(
+        directory.join("gdkit.toml"),
+        "[engine]\nexecutable='unused'\n[inspect]\ncheckpoint_adapter='res://missing.gd'\n",
+    )
+    .unwrap();
+    let invalid_checkpoints = run(
+        &directory,
+        &["inspect", "server", "--checkpoints", "--output", "json"],
+    );
+    assert_eq!(invalid_checkpoints.status.code(), Some(1));
+    let invalid_checkpoints: serde_json::Value =
+        serde_json::from_slice(&invalid_checkpoints.stdout).unwrap();
+    assert_eq!(invalid_checkpoints["checkpoints"]["status"], "error");
+    assert_eq!(
+        invalid_checkpoints["checkpoints"]["error"],
+        "checkpoint adapter does not exist"
     );
 
     let listed = run(&directory, &["sessions"]);

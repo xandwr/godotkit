@@ -4,6 +4,10 @@ const SCHEMA_VERSION := 1
 const MAX_REQUEST_BYTES := 16384
 const MAX_EVENTS := 128
 const MAX_NODES := 4096
+const MAX_CHECKPOINTS := 32
+const MAX_CHECKPOINT_ENTRIES := 2048
+const MAX_CHECKPOINT_DEPTH := 8
+const MAX_CHECKPOINT_STRING_BYTES := 16384
 
 var server := TCPServer.new()
 var peer: StreamPeerTCP
@@ -91,19 +95,27 @@ func poll_socket() -> void:
 
 
 func valid_request(request: Variant) -> bool:
-	if not request is Dictionary or request.size() != 7:
+	if not request is Dictionary:
 		return false
-	return request.get("schema_version") == SCHEMA_VERSION \
+	var base_valid: bool = request.get("schema_version") == SCHEMA_VERSION \
 		and request.get("request_id") is String \
 		and not request.request_id.is_empty() \
 		and request.get("generation") == generation \
 		and request.get("token") == token \
-		and request.get("kind") == "network_observation" \
 		and request.get("deadline_unix_ms") is float \
 		and request.deadline_unix_ms >= Time.get_unix_time_from_system() * 1000.0 \
 		and request.get("max_response_bytes") is float \
 		and request.max_response_bytes >= 4096.0 \
 		and request.max_response_bytes <= 8388608.0
+	if not base_valid:
+		return false
+	if request.get("kind") == "network_observation":
+		return request.size() == 7
+	return request.size() == 8 \
+		and request.get("kind") == "checkpoint_observation" \
+		and request.get("checkpoint_adapter") is String \
+		and request.checkpoint_adapter.begins_with("res://") \
+		and request.checkpoint_adapter.ends_with(".gd")
 
 
 func answer(request: Dictionary) -> void:
@@ -112,13 +124,27 @@ func answer(request: Dictionary) -> void:
 		peer = null
 		buffer.clear()
 		return
-	var observation := collect_observation()
 	var response := {
 		"schema_version": SCHEMA_VERSION,
 		"request_id": request.request_id,
 		"generation": generation,
-		"observation": observation,
 	}
+	if request.kind == "checkpoint_observation":
+		response.checkpoints = collect_checkpoints(request.checkpoint_adapter)
+		var checkpoint_encoded := (JSON.stringify(response) + "\n").to_utf8_buffer()
+		if checkpoint_encoded.size() > int(request.max_response_bytes):
+			response.checkpoints.status = "error"
+			response.checkpoints.error = "checkpoint response exceeds the request byte limit"
+			response.checkpoints.values.clear()
+			checkpoint_encoded = (JSON.stringify(response) + "\n").to_utf8_buffer()
+		if request.deadline_unix_ms >= Time.get_unix_time_from_system() * 1000.0:
+			peer.put_data(checkpoint_encoded)
+		peer.disconnect_from_host()
+		peer = null
+		buffer.clear()
+		return
+	var observation := collect_observation()
+	response.observation = observation
 	var encoded := (JSON.stringify(response) + "\n").to_utf8_buffer()
 	while encoded.size() > int(request.max_response_bytes) and not observation.node_authorities.is_empty():
 		observation.truncated = true
@@ -146,6 +172,104 @@ func answer(request: Dictionary) -> void:
 	peer.disconnect_from_host()
 	peer = null
 	buffer.clear()
+
+
+func collect_checkpoints(adapter_path: String) -> Dictionary:
+	var started := Time.get_ticks_usec()
+	var result := {
+		"adapter": adapter_path,
+		"collected_at_unix_ms": int(Time.get_unix_time_from_system() * 1000.0),
+		"process_tick": get_frame(),
+		"physics_tick": physics_tick,
+		"duration_us": 0,
+		"status": "error",
+		"error": null,
+		"values": {},
+		"limits": {
+			"checkpoints": MAX_CHECKPOINTS,
+			"entries": MAX_CHECKPOINT_ENTRIES,
+			"depth": MAX_CHECKPOINT_DEPTH,
+			"string_bytes": MAX_CHECKPOINT_STRING_BYTES,
+		},
+	}
+	if not ResourceLoader.exists(adapter_path, "Script"):
+		result.error = "checkpoint adapter does not exist"
+		result.duration_us = Time.get_ticks_usec() - started
+		return result
+	var script := load(adapter_path) as Script
+	if script == null or not script.can_instantiate():
+		result.error = "checkpoint adapter is not an instantiable script"
+		result.duration_us = Time.get_ticks_usec() - started
+		return result
+	var adapter: Object = script.new()
+	if not adapter.has_method("collect_checkpoints"):
+		result.error = "checkpoint adapter must define collect_checkpoints(tree)"
+		result.duration_us = Time.get_ticks_usec() - started
+		return result
+	var values: Variant = adapter.call("collect_checkpoints", self)
+	var issue := validate_checkpoints(values)
+	if issue.is_empty():
+		result.status = "collected"
+		result.values = values.duplicate(true)
+	else:
+		result.error = issue
+	result.duration_us = Time.get_ticks_usec() - started
+	return result
+
+
+func validate_checkpoints(values: Variant) -> String:
+	if not values is Dictionary:
+		return "collect_checkpoints(tree) must return a Dictionary"
+	if values.size() > MAX_CHECKPOINTS:
+		return "checkpoint count exceeds the limit of %d" % MAX_CHECKPOINTS
+	var budget := {"remaining": MAX_CHECKPOINT_ENTRIES}
+	for name in values:
+		if not name is String or name.is_empty():
+			return "checkpoint names must be non-empty strings"
+		if name.to_utf8_buffer().size() > MAX_CHECKPOINT_STRING_BYTES:
+			return "checkpoint name exceeds the string byte limit"
+		if not values[name] is Dictionary:
+			return "checkpoint '%s' must be a Dictionary" % name
+		var issue := validate_checkpoint_value(values[name], 1, budget)
+		if not issue.is_empty():
+			return "checkpoint '%s': %s" % [name, issue]
+	return ""
+
+
+func validate_checkpoint_value(value: Variant, depth: int, budget: Dictionary) -> String:
+	if depth > MAX_CHECKPOINT_DEPTH:
+		return "value depth exceeds the limit of %d" % MAX_CHECKPOINT_DEPTH
+	match typeof(value):
+		TYPE_NIL, TYPE_BOOL, TYPE_INT:
+			return ""
+		TYPE_FLOAT:
+			return "" if is_finite(value) else "floating-point values must be finite"
+		TYPE_STRING:
+			return "" if value.to_utf8_buffer().size() <= MAX_CHECKPOINT_STRING_BYTES \
+				else "string exceeds the byte limit of %d" % MAX_CHECKPOINT_STRING_BYTES
+		TYPE_ARRAY:
+			budget.remaining -= value.size()
+			if budget.remaining < 0:
+				return "values exceed the entry limit of %d" % MAX_CHECKPOINT_ENTRIES
+			for item in value:
+				var issue := validate_checkpoint_value(item, depth + 1, budget)
+				if not issue.is_empty():
+					return issue
+			return ""
+		TYPE_DICTIONARY:
+			budget.remaining -= value.size()
+			if budget.remaining < 0:
+				return "values exceed the entry limit of %d" % MAX_CHECKPOINT_ENTRIES
+			for key in value:
+				if not key is String:
+					return "dictionary keys must be strings"
+				if key.to_utf8_buffer().size() > MAX_CHECKPOINT_STRING_BYTES:
+					return "dictionary key exceeds the string byte limit"
+				var issue := validate_checkpoint_value(value[key], depth + 1, budget)
+				if not issue.is_empty():
+					return issue
+			return ""
+	return "unsupported value type %s" % type_string(typeof(value))
 
 
 func collect_observation() -> Dictionary:

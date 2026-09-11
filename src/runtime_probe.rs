@@ -12,6 +12,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::cli::{InspectArgs, NetOutput};
 
@@ -72,6 +73,8 @@ struct Request<'a> {
     generation: &'a str,
     token: &'a str,
     kind: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checkpoint_adapter: Option<&'a str>,
     deadline_unix_ms: u64,
     max_response_bytes: u64,
 }
@@ -84,7 +87,40 @@ struct Response {
     #[serde(default)]
     session: String,
     generation: String,
-    observation: NetworkObservation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    observation: Option<NetworkObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoints: Option<CheckpointObservation>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CheckpointObservation {
+    adapter: String,
+    collected_at_unix_ms: u64,
+    process_tick: u64,
+    physics_tick: u64,
+    duration_us: u64,
+    status: CheckpointStatus,
+    error: Option<String>,
+    values: std::collections::BTreeMap<String, Map<String, Value>>,
+    limits: CheckpointLimits,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointStatus {
+    Collected,
+    Error,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CheckpointLimits {
+    checkpoints: u64,
+    entries: u64,
+    depth: u64,
+    string_bytes: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -355,6 +391,7 @@ fn send_request<T: for<'de> Deserialize<'de>>(
     endpoint_token: &str,
     generation: &str,
     kind: &str,
+    checkpoint_adapter: Option<&str>,
 ) -> Result<(String, T), Box<dyn Error>> {
     let request_id = token();
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -370,6 +407,7 @@ fn send_request<T: for<'de> Deserialize<'de>>(
             generation,
             token: endpoint_token,
             kind,
+            checkpoint_adapter,
             deadline_unix_ms: timestamp() + 2500,
             max_response_bytes: MAX_RESPONSE_BYTES,
         },
@@ -388,12 +426,13 @@ fn send_request<T: for<'de> Deserialize<'de>>(
     Ok((request_id, serde_json::from_str(&response)?))
 }
 
-fn request(endpoint: &ProbeEndpoint, generation: &str) -> Result<Response, Box<dyn Error>> {
+fn request_network(endpoint: &ProbeEndpoint, generation: &str) -> Result<Response, Box<dyn Error>> {
     let (request_id, mut response): (String, Response) = send_request(
         endpoint.port,
         &endpoint.token,
         generation,
         "network_observation",
+        None,
     )?;
     if response.schema_version != REQUEST_SCHEMA_VERSION
         || response.request_id != request_id
@@ -406,6 +445,7 @@ fn request(endpoint: &ProbeEndpoint, generation: &str) -> Result<Response, Box<d
         &endpoint.debugger_token,
         generation,
         "rpc_events",
+        None,
     )?;
     if rpc.schema_version != REQUEST_SCHEMA_VERSION
         || rpc.request_id != rpc_request_id
@@ -413,17 +453,41 @@ fn request(endpoint: &ProbeEndpoint, generation: &str) -> Result<Response, Box<d
     {
         return Err("runtime debugger response did not match the request".into());
     }
-    response.observation.recent_events.extend(rpc.recent_events);
-    response
+    let observation = response
         .observation
+        .as_mut()
+        .ok_or("runtime probe omitted the network observation")?;
+    observation.recent_events.extend(rpc.recent_events);
+    observation
         .recent_events
         .sort_by_key(|event| event.collected_at_unix_ms);
-    if response.observation.recent_events.len() > 256 {
-        response.observation.recent_events = response
-            .observation
+    if observation.recent_events.len() > 256 {
+        observation.recent_events = observation
             .recent_events
-            .split_off(response.observation.recent_events.len() - 256);
-        response.observation.truncated = true;
+            .split_off(observation.recent_events.len() - 256);
+        observation.truncated = true;
+    }
+    Ok(response)
+}
+
+fn request_checkpoints(
+    endpoint: &ProbeEndpoint,
+    generation: &str,
+    adapter: &str,
+) -> Result<Response, Box<dyn Error>> {
+    let (request_id, response): (String, Response) = send_request(
+        endpoint.port,
+        &endpoint.token,
+        generation,
+        "checkpoint_observation",
+        Some(adapter),
+    )?;
+    if response.schema_version != REQUEST_SCHEMA_VERSION
+        || response.request_id != request_id
+        || response.generation != generation
+        || response.checkpoints.is_none()
+    {
+        return Err("runtime probe response did not match the request".into());
     }
     Ok(response)
 }
@@ -448,18 +512,66 @@ pub(crate) fn inspect(args: InspectArgs) -> Result<ExitCode, Box<dyn Error>> {
         );
         return Ok(ExitCode::from(1));
     };
-    let mut response = request(endpoint, &record.generation)?;
+    let adapter = if args.checkpoints {
+        crate::engine::read_config(&project)?.and_then(|config| config.inspect.checkpoint_adapter)
+    } else {
+        None
+    };
+    if args.checkpoints && adapter.is_none() {
+        eprintln!("error: no inspect.checkpoint_adapter is configured in gdkit.toml");
+        return Ok(ExitCode::from(1));
+    }
+    let mut response = if args.net {
+        request_network(endpoint, &record.generation)?
+    } else {
+        request_checkpoints(endpoint, &record.generation, adapter.as_deref().unwrap())?
+    };
+    if args.net
+        && let Some(adapter) = adapter.as_deref()
+    {
+        response.checkpoints =
+            request_checkpoints(endpoint, &record.generation, adapter)?.checkpoints;
+    }
     response.session = record.name.clone();
     match args.output {
         NetOutput::Json => println!("{}", serde_json::to_string_pretty(&response)?),
         NetOutput::Human => print_human(&response),
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(
+        if response
+            .checkpoints
+            .as_ref()
+            .is_some_and(|checkpoints| checkpoints.status == CheckpointStatus::Error)
+        {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        },
+    )
 }
 
 fn print_human(response: &Response) {
-    let observation = &response.observation;
     println!("session: {}@{}", response.session, response.generation);
+    if let Some(checkpoints) = &response.checkpoints {
+        println!(
+            "checkpoints: {} ({}, {} us)",
+            checkpoints.adapter,
+            match checkpoints.status {
+                CheckpointStatus::Collected => "collected",
+                CheckpointStatus::Error => "error",
+            },
+            checkpoints.duration_us
+        );
+        if let Some(error) = &checkpoints.error {
+            println!("  error: {error}");
+        }
+        for (name, value) in &checkpoints.values {
+            println!("  {name}: {}", Value::Object(value.clone()));
+        }
+    }
+    let Some(observation) = &response.observation else {
+        return;
+    };
     println!("collected: {} ms", observation.collected_at_unix_ms);
     println!(
         "ticks: process {} physics {}",
