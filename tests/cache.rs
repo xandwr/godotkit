@@ -173,3 +173,23 @@ fn clean_rejects_junctions_without_touching_the_target() {
         "keep"
     );
 }
+
+#[test]
+fn status_and_stop_need_no_engine_and_status_creates_no_project_cache() {
+    let project = Project::new("status");
+    let status = project.run(&["cache", "status", "--output", "json"]);
+    assert!(status.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["freshness"], "unknown");
+    assert!(
+        report["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["present"] == false)
+    );
+    assert!(!project.0.join(".godot").exists());
+    assert!(project.run(&["cache", "stop"]).status.success());
+    assert!(!project.0.join(".godot").exists());
+}

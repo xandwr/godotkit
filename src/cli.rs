@@ -61,6 +61,29 @@ pub enum CacheCommand {
     Rebuild(CacheProjectArgs),
     #[command(about = "Remove derived indexes, imported assets, and shader caches")]
     Clean(CacheCleanArgs),
+    #[command(about = "Show cache presence and size without starting Godot")]
+    Status(CacheStatusArgs),
+    #[command(about = "Stop this project's background import editor")]
+    Stop(CacheStopArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CacheStatusArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Select human or JSON output"
+    )]
+    pub output: NetOutput,
+}
+
+#[derive(Debug, Args)]
+pub struct CacheStopArgs {
+    #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -213,7 +236,7 @@ pub struct CheckArgs {
         long,
         conflicts_with = "fresh",
         conflicts_with_all = ["scene", "script", "strict_methods", "smoke_frames", "smoke_timeout", "script_timeout", "isolated", "output"],
-        help = "Stop this project's background import editor without checking"
+        help = "Stop the import editor (prefer gdkit cache stop)"
     )]
     pub stop_worker: bool,
 }

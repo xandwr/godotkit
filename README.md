@@ -156,6 +156,23 @@ Cache mutations and checks share a project lock outside `.godot`. Cleanup
 rejects cache symlinks and Windows reparse points instead of following them.
 `check --fresh` still means fresh processes; it does not delete existing caches.
 
+`gdkit cache status [PROJECT]` reports cache presence and sizes without starting
+Godot or requiring an engine configuration. Add `--output json` for a versioned
+machine-readable inventory. Presence does not prove freshness or worker liveness.
+`gdkit cache stop [PROJECT]` stops only gdkit's background import editor;
+`gdkit check --stop-worker` remains supported for compatibility.
+
+Typical workflow after moving files:
+
+```powershell
+gdkit cache refresh game
+gdkit check game
+```
+
+For a stale UID index, use `gdkit cache rebuild game`. Reserve `cache clean` for
+discarding imported assets and shader caches as well. Rebuild preserves existing
+resource identities; it does not assign fresh UIDs to every resource.
+
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
 Importing can update the project's Godot caches. It exits 1 when Godot reports an

@@ -7,13 +7,23 @@ use std::{
     process::ExitCode,
 };
 
-use crate::cli::{CacheArgs, CacheCleanArgs, CacheCommand, CacheProjectArgs};
+use crate::cli::{
+    CacheArgs, CacheCleanArgs, CacheCommand, CacheProjectArgs, CacheStatusArgs, NetOutput,
+};
 
 pub(crate) fn run(args: CacheArgs) -> Result<ExitCode, Box<dyn Error>> {
     match args.command {
         CacheCommand::Refresh(args) => refresh(args),
         CacheCommand::Rebuild(args) => import(args, true),
         CacheCommand::Clean(args) => clean(args),
+        CacheCommand::Status(args) => status(args),
+        CacheCommand::Stop(args) => {
+            let project = crate::engine::project_root(&args.project)?;
+            let _lock = lock(&project)?;
+            crate::import_worker::stop_project(&project)?;
+            println!("import worker stopped");
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -195,6 +205,70 @@ fn clean(args: CacheCleanArgs) -> Result<ExitCode, Box<dyn Error>> {
             "cache cleaned: {} targets; run gdkit cache refresh to regenerate",
             targets.len()
         );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(serde::Serialize)]
+struct CacheEntry {
+    path: String,
+    present: bool,
+    bytes: u64,
+}
+
+fn size(path: &Path) -> io::Result<u64> {
+    if path.is_dir() {
+        fs::read_dir(path)?.try_fold(0, |total, entry| Ok(total + size(&entry?.path())?))
+    } else {
+        Ok(fs::metadata(path)?.len())
+    }
+}
+
+fn status(args: CacheStatusArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let project = crate::engine::project_root(&args.project)?;
+    let root = project.join(".godot");
+    if fs::symlink_metadata(&root).is_ok() {
+        validate_tree(&root)?;
+    }
+    let mut entries = Vec::new();
+    for name in [
+        "uid_cache.bin",
+        "global_script_class_cache.cfg",
+        "scene_groups_cache.cfg",
+        "editor",
+        "imported",
+        "shader_cache",
+        "gdkit/api-index.json",
+        "gdkit/engine-probe.json",
+        "gdkit/import-worker.json",
+    ] {
+        let path = root.join(name);
+        let present = path.try_exists()?;
+        entries.push(CacheEntry {
+            path: format!(".godot/{name}"),
+            present,
+            bytes: if present { size(&path)? } else { 0 },
+        });
+    }
+    match args.output {
+        NetOutput::Json => println!(
+            "{}",
+            serde_json::json!({"schema_version": 1, "project": project, "entries": entries, "freshness": "unknown"})
+        ),
+        NetOutput::Human => {
+            println!("project: {}", crate::engine::display_path(&project));
+            for entry in entries {
+                println!(
+                    "{}: {} ({} bytes)",
+                    entry.path,
+                    if entry.present { "present" } else { "missing" },
+                    entry.bytes
+                );
+            }
+            println!(
+                "Presence does not establish freshness or worker liveness. Run gdkit cache refresh after filesystem changes."
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
