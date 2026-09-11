@@ -66,9 +66,36 @@ error or a resource fails to load, and exits 2 for tooling failures such as a
 missing project, invalid configuration, or incompatible engine. This checks
 resource loading, not gameplay execution or a complete C# build.
 
+By default, the import editor stays alive for five minutes after its last request.
+Subsequent checks ask it to scan again and update changed script classes, avoiding
+editor startup after ordinary script edits. Every check still loads all selected
+resources in a **fresh process**, sharing dependencies within that single pass;
+script files load before scenes and resources to support cyclic preloads. There
+is no cached pass result or persistent GDScript analyzer in the resource checker.
+
+The worker restarts when the engine, worker implementation, non-script files,
+addon scripts, or `@tool` scripts change. Changes after an import error also
+restart it so errors from editor startup can be reevaluated. Unchanged import
+errors remain visible and continue to fail checks. New assets, settings changes,
+and cold startup can therefore still take seconds. Script contents are hashed
+to detect edits even when modification timestamps are unchanged.
+
+Use `gdkit check --fresh` for a complete import and resource check with new
+processes, including import-editor shutdown diagnostics. This also stops any
+existing worker. `gdkit check --stop-worker` stops the project's worker without
+checking, releasing its memory and file handles immediately. Worker state and
+logs live under `.godot/gdkit`; its authenticated socket listens only on localhost.
+Concurrent import requests are serialized with a project lock. Unsupported
+worker APIs or project symlinks fall back to fresh importing.
+
 Use `gdkit check --timings` to print file scan, engine validation (cached or
-probed), import, resource loading, and total elapsed times to stderr. Project
-import and resource loading still run on every check.
+probed), import (worker startup or warm worker), resource loading, and total
+elapsed times to stderr. Project import and resource loading still run on every
+check. On a local Pill Poppers copy with 45 scripts, 8 scenes, and 29 resources,
+warm checks measured roughly 490 ms wall time; this is a sample, not a guarantee
+for every project or cold/import-changing check. Successful ordinary script-edit
+checks measured 489-499 ms with the existing broken Steam editor plugin disabled
+only in the benchmark copy; all 82 selected files were still checked.
 
 The final summary explicitly says `check passed` or `check failed`, colored green
 or red in a terminal. Redirected output is plain text by default; `NO_COLOR`
@@ -120,6 +147,7 @@ editor with:
 ```powershell
 $env:GDKIT_TEST_GODOT = 'P:/path/to/godot.console.exe'
 cargo test --test check -- --include-ignored
+cargo test --test import_worker -- --include-ignored
 ```
 
 `scene-tree` reads a Godot text scene and prints its literal node hierarchy without

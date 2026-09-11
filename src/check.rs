@@ -304,6 +304,11 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let _total = PhaseTimer::new("total", args.timings);
     let scan_timer = PhaseTimer::new("file scan", args.timings);
     let project = crate::engine::project_root(&args.project)?;
+    if args.stop_worker {
+        crate::import_worker::stop_project(&project)?;
+        println!("import worker stopped");
+        return Ok(ExitCode::SUCCESS);
+    }
     let paths =
         crate::project_files::collect(&project, &["gd", "tscn", "scn", "tres", "res", "gdshader"])?;
     let paths = paths
@@ -332,12 +337,35 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         crate::engine::display_path(&engine)
     );
 
-    let import_timer = PhaseTimer::new("import", args.timings);
-    let import = engine_output(
-        &engine,
-        &project,
-        &[OsStr::new("--import"), OsStr::new("--quiet")],
-    )?;
+    let mut import_timer = PhaseTimer::new("import", args.timings);
+    let import = if args.fresh {
+        crate::import_worker::stop_project(&project)?;
+        engine_output(
+            &engine,
+            &project,
+            &[OsStr::new("--import"), OsStr::new("--quiet")],
+        )?
+    } else {
+        match crate::import_worker::import(&project, &engine) {
+            Ok((output, reused)) => {
+                import_timer.name = if reused {
+                    "import (warm worker)"
+                } else {
+                    "import (worker startup)"
+                };
+                output
+            }
+            Err(error) => {
+                crate::import_worker::stop_project(&project)?;
+                eprintln!("warning: {error}; falling back to a fresh import");
+                engine_output(
+                    &engine,
+                    &project,
+                    &[OsStr::new("--import"), OsStr::new("--quiet")],
+                )?
+            }
+        }
+    };
     drop(import_timer);
     let mut failed = !import.status.success() || has_errors(&import);
     write_diagnostics(&import, "Import", &project, &paths, args.verbose)?;

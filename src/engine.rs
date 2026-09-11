@@ -39,7 +39,7 @@ struct EngineFile {
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq)]
-struct ProbeKey {
+pub(crate) struct ProbeKey {
     files: Vec<EngineFile>,
     implementation: u64,
 }
@@ -50,7 +50,7 @@ struct CachedProbe {
     version: String,
 }
 
-fn probe_key(engine: &Path) -> std::io::Result<ProbeKey> {
+pub(crate) fn probe_key(engine: &Path) -> std::io::Result<ProbeKey> {
     let engine = fs::canonicalize(engine)?;
     let mut paths = vec![engine.clone()];
     if cfg!(windows)

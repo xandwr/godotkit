@@ -46,6 +46,17 @@ pub struct CheckArgs {
         help = "Show file scan, engine validation, import, resource loading, and total times"
     )]
     pub timings: bool,
+    #[arg(
+        long,
+        help = "Use fresh Godot processes, including a full editor import"
+    )]
+    pub fresh: bool,
+    #[arg(
+        long,
+        conflicts_with = "fresh",
+        help = "Stop this project's background import editor without checking"
+    )]
+    pub stop_worker: bool,
 }
 
 #[derive(Debug, Args)]

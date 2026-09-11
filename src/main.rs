@@ -1,6 +1,7 @@
 mod check;
 mod cli;
 mod engine;
+mod import_worker;
 mod project_files;
 
 use std::{

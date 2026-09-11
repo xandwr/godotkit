@@ -169,6 +169,15 @@ fn checks_project_scripts_scenes_and_resources() {
     );
     assert!(diagnostics.contains("res://broken.gd:3:"), "{diagnostics}");
     assert!(diagnostics.contains("Resource loading full Godot output:"));
+    let stopped = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .args(["check", directory.to_str().unwrap(), "--stop-worker"])
+        .output()
+        .unwrap();
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 
