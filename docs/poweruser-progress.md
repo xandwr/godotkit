@@ -250,7 +250,8 @@ Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed
 Blocker: None recorded. Evidence / commits: Project-owned `SceneTree` scripts now
 run through `gdkit check --script` with deadlines, diagnostics, and durable phase
 artifacts. `--isolated` provides a fresh temporary project without changing the
-source project's imported state. Named protocol messages and readiness remain.
+source project's imported state. Named scenarios persist startup state, the first
+failure, resolved ports, participant sessions, and readiness through cleanup.
 
 - [ ] M08.01 Define opt-in named scenarios using project-owned fixture scenes and
   setup, ready, checkpoint, assertion, finish messages.
@@ -474,7 +475,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
-| 2026-09-11 | M08.01-M08.02 partial, M09.01-M09.03 partial, M09.05 partial | Added named multiplayer scenarios with explicit `dedicated_enet`/`steam_p2p` transport, staged server/client/late-client startup, bounded readiness checkpoints, server-bound dynamic ports, per-participant logs and user-data roots, plus separate orderly disconnect and forced crash controls | `src/scenario.rs`, `src/session.rs`, `src/runtime_probe.gd`, `tests/scenarios.rs`; validated a real ENet server binding port 0, reporting its endpoint by checkpoint, two clients, late join, isolation, disconnect, crash, and cleanup on custom Godot 4.7.3; next add persisted failure artifacts and scenario actions beyond process control |
+| 2026-09-11 | M08.01-M08.02 partial, M09.01-M09.03 partial, M09.05 partial | Added named multiplayer scenarios with explicit `dedicated_enet`/`steam_p2p` transport, staged server/client/late-client startup, bounded readiness checkpoints, server-bound dynamic ports, durable startup/failure state, per-participant logs and user-data roots, plus separate orderly disconnect and forced crash controls | `src/scenario.rs`, `src/session.rs`, `src/runtime_probe.gd`, `tests/scenarios.rs`; validated a real ENet server binding port 0, reporting its endpoint by checkpoint, two clients, late join, persisted readiness failure after cleanup, isolation, disconnect, crash, and cleanup on custom Godot 4.7.3; next add scenario actions beyond process control |
 | 2026-09-11 | M09.02 partial | Added bounded recursive checkpoint comparison across exact live session generations with capture skew, JSON Pointer differences, and automation-friendly exit status | `src/runtime_probe.rs`, `tests/sessions.rs`; validated a declared lobby revision divergence between two custom Godot 4.7.3 sessions; next persist scenario-correlated captures |
 | 2026-09-11 | M09.01 partial | Added opt-in project checkpoint adapters and bounded live collection with session, adapter, wall-clock, process-tick, physics-tick, and duration identity | `src/engine.rs`, `src/runtime_probe.rs`, `src/runtime_probe.gd`, `tests/sessions.rs`; validated named checkpoint dictionaries and combined network collection on custom Godot 4.7.3; next compare participants and persist captures |
 | 2026-09-11 | M06.02, M06.06 | Added `gdkit inspect <session> --net` with fresh generation-scoped multiplayer roots, peers, authority, replication state, connection events, and built-in RPC profiler traffic over bounded typed loopback requests | `src/runtime_probe.rs`, `src/runtime_probe.gd`, `src/debugger_bridge.gd`, `tests/sessions.rs`; validated startup, human/JSON observations, connection and RPC events, stale generations, restart, concurrent sessions, and cleanup on custom Godot 4.7.3 |

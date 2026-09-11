@@ -113,6 +113,10 @@ struct ScenarioRun {
     started_at_unix_ms: u64,
     ports: BTreeMap<String, u16>,
     participants: Vec<ParticipantRun>,
+    #[serde(default = "ready_run_status")]
+    status: ScenarioRunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure: Option<ScenarioFailure>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -123,6 +127,81 @@ struct ParticipantRun {
     session: String,
     log: PathBuf,
     user_data_dir: PathBuf,
+    #[serde(default = "ready_participant_status")]
+    readiness: ParticipantReadiness,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioRunStatus {
+    Starting,
+    Ready,
+    Failed,
+}
+
+impl ScenarioRunStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ParticipantReadiness {
+    Launched,
+    Ready,
+    Failed,
+}
+
+impl ParticipantReadiness {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Launched => "launched",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioFailure {
+    participant: String,
+    phase: ScenarioFailurePhase,
+    message: String,
+    occurred_at_unix_ms: u64,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ScenarioFailurePhase {
+    ArgumentExpansion,
+    Launch,
+    Readiness,
+    EndpointResolution,
+}
+
+impl ScenarioFailurePhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ArgumentExpansion => "argument_expansion",
+            Self::Launch => "launch",
+            Self::Readiness => "readiness",
+            Self::EndpointResolution => "endpoint_resolution",
+        }
+    }
+}
+
+fn ready_run_status() -> ScenarioRunStatus {
+    ScenarioRunStatus::Ready
+}
+
+fn ready_participant_status() -> ParticipantReadiness {
+    ParticipantReadiness::Ready
 }
 
 fn default_timeout() -> u64 {
@@ -296,11 +375,29 @@ fn records_root(project: &Path) -> PathBuf {
     root(project).join("records")
 }
 
-fn write_run(project: &Path, run: &ScenarioRun) -> Result<(), Box<dyn Error>> {
+fn run_path(project: &Path, run: &ScenarioRun) -> PathBuf {
+    records_root(project).join(format!("{}-{}.json", run.name, run.generation))
+}
+
+fn create_run(project: &Path, run: &ScenarioRun) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(records_root(project))?;
-    let path = records_root(project).join(format!("{}-{}.json", run.name, run.generation));
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(&serde_json::to_vec_pretty(run)?)?;
+    let bytes = serde_json::to_vec_pretty(run)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(run_path(project, run))?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn update_run(project: &Path, run: &ScenarioRun) -> Result<(), Box<dyn Error>> {
+    let bytes = serde_json::to_vec_pretty(run)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(run_path(project, run))?;
+    file.write_all(&bytes)?;
     file.sync_all()?;
     Ok(())
 }
@@ -399,6 +496,40 @@ fn cleanup(records: &[SessionRecord]) {
     }
 }
 
+fn fail_start(
+    project: &Path,
+    run: &mut ScenarioRun,
+    launched: &[SessionRecord],
+    participant: &str,
+    phase: ScenarioFailurePhase,
+    error: Box<dyn Error>,
+) -> Result<ExitCode, Box<dyn Error>> {
+    run.status = ScenarioRunStatus::Failed;
+    run.failure.get_or_insert_with(|| ScenarioFailure {
+        participant: participant.into(),
+        phase,
+        message: error.to_string(),
+        occurred_at_unix_ms: timestamp(),
+    });
+    if matches!(phase, ScenarioFailurePhase::Readiness)
+        && let Some(participant) = run
+            .participants
+            .iter_mut()
+            .find(|record| record.name == participant)
+    {
+        participant.readiness = ParticipantReadiness::Failed;
+    }
+    let persisted = update_run(project, run);
+    cleanup(launched);
+    match persisted {
+        Ok(()) => Err(error),
+        Err(persist_error) => Err(format!(
+            "{error}; additionally failed to persist scenario failure: {persist_error}"
+        )
+        .into()),
+    }
+}
+
 fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
     let project = crate::engine::project_root(&args.project)?;
     let config =
@@ -434,8 +565,19 @@ fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
         .join("runs")
         .join(format!("{}-{generation}", args.name));
     fs::create_dir_all(&run_root)?;
+    let mut run = ScenarioRun {
+        schema_version: SCENARIO_SCHEMA_VERSION,
+        name: args.name,
+        generation,
+        transport: scenario.transport,
+        started_at_unix_ms: timestamp(),
+        ports: ports.clone(),
+        participants: Vec::new(),
+        status: ScenarioRunStatus::Starting,
+        failure: None,
+    };
+    create_run(&project, &run)?;
     let mut launched = Vec::new();
-    let mut run_participants = Vec::new();
     let timeout = Duration::from_secs(scenario.timeout_seconds);
     let stages = [
         &[ParticipantRole::Server][..],
@@ -460,13 +602,19 @@ fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
             {
                 Ok(arguments) => arguments,
                 Err(error) => {
-                    cleanup(&launched);
-                    return Err(error);
+                    return fail_start(
+                        &project,
+                        &mut run,
+                        &launched,
+                        &participant.name,
+                        ScenarioFailurePhase::ArgumentExpansion,
+                        error,
+                    );
                 }
             };
-            let session_name = format!("scenario-{}-{}", args.name, participant.name);
+            let session_name = format!("scenario-{}-{}", run.name, participant.name);
             let mut environment = BTreeMap::new();
-            environment.insert("GDKIT_SCENARIO".into(), args.name.clone());
+            environment.insert("GDKIT_SCENARIO".into(), run.name.clone());
             environment.insert(
                 "GDKIT_SCENARIO_PARTICIPANT".into(),
                 participant.name.clone(),
@@ -500,8 +648,14 @@ fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
             }) {
                 Ok(record) => record,
                 Err(error) => {
-                    cleanup(&launched);
-                    return Err(error);
+                    return fail_start(
+                        &project,
+                        &mut run,
+                        &launched,
+                        &participant.name,
+                        ScenarioFailurePhase::Launch,
+                        error,
+                    );
                 }
             };
             println!(
@@ -511,32 +665,58 @@ fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
                 record.name,
                 record.generation
             );
-            run_participants.push(ParticipantRun {
+            run.participants.push(ParticipantRun {
                 name: participant.name.clone(),
                 role: participant.role,
                 session: format!("{}@{}", record.name, record.generation),
                 log: record.log.clone(),
                 user_data_dir,
+                readiness: ParticipantReadiness::Launched,
             });
             launched.push(record);
+            if let Err(error) = update_run(&project, &run) {
+                cleanup(&launched);
+                return Err(error);
+            }
         }
         for participant in stage {
             let record = launched
                 .iter()
-                .find(|record| {
-                    record.name == format!("scenario-{}-{}", args.name, participant.name)
-                })
+                .find(|record| record.name == format!("scenario-{}-{}", run.name, participant.name))
                 .expect("launched participant");
             let checkpoints = match wait_ready(record, participant, adapter, timeout) {
                 Ok(checkpoints) => checkpoints,
                 Err(error) => {
-                    cleanup(&launched);
-                    return Err(error);
+                    return fail_start(
+                        &project,
+                        &mut run,
+                        &launched,
+                        &participant.name,
+                        ScenarioFailurePhase::Readiness,
+                        error,
+                    );
                 }
             };
-            if participant.role == ParticipantRole::Server
-                && let Err(error) = resolve_dynamic_ports(&scenario.ports, &checkpoints, &mut ports)
-            {
+            if participant.role == ParticipantRole::Server {
+                if let Err(error) = resolve_dynamic_ports(&scenario.ports, &checkpoints, &mut ports)
+                {
+                    return fail_start(
+                        &project,
+                        &mut run,
+                        &launched,
+                        &participant.name,
+                        ScenarioFailurePhase::EndpointResolution,
+                        error,
+                    );
+                }
+                run.ports.clone_from(&ports);
+            }
+            run.participants
+                .iter_mut()
+                .find(|record| record.name == participant.name)
+                .expect("persisted participant")
+                .readiness = ParticipantReadiness::Ready;
+            if let Err(error) = update_run(&project, &run) {
                 cleanup(&launched);
                 return Err(error);
             }
@@ -546,16 +726,8 @@ fn start(args: ScenarioStartArgs) -> Result<ExitCode, Box<dyn Error>> {
             );
         }
     }
-    let run = ScenarioRun {
-        schema_version: SCENARIO_SCHEMA_VERSION,
-        name: args.name,
-        generation,
-        transport: scenario.transport,
-        started_at_unix_ms: timestamp(),
-        ports,
-        participants: run_participants,
-    };
-    if let Err(error) = write_run(&project, &run) {
+    run.status = ScenarioRunStatus::Ready;
+    if let Err(error) = update_run(&project, &run) {
         cleanup(&launched);
         return Err(error);
     }
@@ -570,18 +742,28 @@ fn status(args: ScenarioNameArgs) -> Result<ExitCode, Box<dyn Error>> {
         return Ok(ExitCode::from(1));
     };
     println!(
-        "scenario: {}@{} transport={}",
+        "scenario: {}@{} transport={} status={}",
         run.name,
         run.generation,
-        run.transport.as_str()
+        run.transport.as_str(),
+        run.status.as_str()
     );
+    if let Some(failure) = &run.failure {
+        println!(
+            "first failure: participant={} phase={} at={} message={}",
+            failure.participant,
+            failure.phase.as_str(),
+            failure.occurred_at_unix_ms,
+            failure.message
+        );
+    }
     for (name, port) in &run.ports {
         println!("port {name}: {port}");
     }
     for participant in &run.participants {
         let record = participant_record(&project, participant)?;
         println!(
-            "{} ({}) {} log={} user_data={}",
+            "{} ({}) {} readiness={} log={} user_data={}",
             participant.name,
             participant.role.as_str(),
             if session::is_running(&record) {
@@ -589,6 +771,7 @@ fn status(args: ScenarioNameArgs) -> Result<ExitCode, Box<dyn Error>> {
             } else {
                 "exited"
             },
+            participant.readiness.as_str(),
             crate::engine::display_path(&participant.log),
             crate::engine::display_path(&participant.user_data_dir)
         );

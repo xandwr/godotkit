@@ -417,8 +417,11 @@ Dedicated ENet scenarios require exactly one server and at least one named port.
 Steam P2P scenarios reject dedicated-server participants. Both require an
 explicit late client. Use `gdkit scenario status NAME`, `disconnect NAME
 PARTICIPANT`, `crash NAME PARTICIPANT`, and `stop NAME` to control the latest
-run. Disconnect requests orderly engine shutdown and reports failure without
-falling back to a forced crash; crash is the explicit force-termination command.
+run. Run records are created before the first participant launches and retain
+the first startup failure, resolved ports, and each launched participant's
+readiness state after cleanup. Disconnect requests orderly engine shutdown and
+reports failure without falling back to a forced crash; crash is the explicit
+force-termination command.
 
 `autoloads` finds the nearest enclosing Godot project and prints its saved
 autoload initialization order with zero-based indices, names, singleton status,

@@ -97,6 +97,23 @@ name = 'late-client'
 role = 'late_client'
 arguments = ['--client', '--port={port.game}']
 readiness = { path = '/network/ready', equals = true }
+
+[scenarios.failed_start]
+transport = 'dedicated_enet'
+timeout_seconds = 1
+ports = { game = { checkpoint = '/network/port' } }
+
+[[scenarios.failed_start.participants]]
+name = 'server'
+role = 'server'
+arguments = ['--server', '--port={port.game}']
+readiness = { path = '/network/missing', equals = true }
+
+[[scenarios.failed_start.participants]]
+name = 'late-client'
+role = 'late_client'
+arguments = ['--client', '--port={port.game}']
+readiness = { path = '/network/ready', equals = true }
 "#,
     )
     .unwrap();
@@ -165,5 +182,23 @@ readiness = { path = '/network/ready', equals = true }
             .count(),
         4
     );
+
+    let failed = run(
+        &directory,
+        &["scenario", "start", "failed_start", "--godot", &engine],
+    );
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("did not reach readiness"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    let failed_status = run(&directory, &["scenario", "status", "failed_start"]);
+    assert!(failed_status.status.success());
+    let failed_status = String::from_utf8(failed_status.stdout).unwrap();
+    assert!(failed_status.contains("status=failed"));
+    assert!(failed_status.contains("first failure: participant=server phase=readiness"));
+    assert!(failed_status.contains("server (server) exited readiness=failed"));
+    assert!(failed_status.contains("port game: 0"));
     fs::remove_dir_all(directory).unwrap();
 }
