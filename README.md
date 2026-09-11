@@ -50,12 +50,25 @@ The selected executable and reported version are printed to stderr. Compatibilit
 has been tested with official 4.7.2 and a custom 4.7.3 RC build; the probe permits
 other Godot 4 editors without claiming that every release has been tested.
 
+Successful compatibility probes are cached per project in
+`.godot/gdkit/engine-probe.json`. Repeated commands reuse the reported version
+without launching the three compatibility-check processes. The cache is
+invalidated by changes to the engine path, file size, or modification time, or to
+gdkit's probe implementation and scripts. Windows console launchers also track
+their companion engine executable when present. Failed probes are never cached;
+missing, unreadable, or malformed caches trigger a fresh probe. Cache write
+failures do not prevent checking. Delete the cache file to force a fresh probe.
+
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
 Importing can update the project's Godot caches. It exits 1 when Godot reports an
 error or a resource fails to load, and exits 2 for tooling failures such as a
 missing project, invalid configuration, or incompatible engine. This checks
 resource loading, not gameplay execution or a complete C# build.
+
+Use `gdkit check --timings` to print file scan, engine validation (cached or
+probed), import, resource loading, and total elapsed times to stderr. Project
+import and resource loading still run on every check.
 
 The final summary explicitly says `check passed` or `check failed`, colored green
 or red in a terminal. Redirected output is plain text by default; `NO_COLOR`

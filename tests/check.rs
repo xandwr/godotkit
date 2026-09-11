@@ -81,7 +81,7 @@ fn checks_project_scripts_scenes_and_resources() {
     let clean = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .env("NO_COLOR", "1")
         .env_remove("GDKIT_GODOT")
-        .args(["check", directory.to_str().unwrap()])
+        .args(["check", directory.to_str().unwrap(), "--timings"])
         .output()
         .unwrap();
     assert!(
@@ -89,6 +89,17 @@ fn checks_project_scripts_scenes_and_resources() {
         "{}",
         String::from_utf8_lossy(&clean.stderr)
     );
+    let timing_output = String::from_utf8_lossy(&clean.stderr);
+    assert!(
+        timing_output.contains("timing: engine validation (cached)"),
+        "{timing_output}"
+    );
+    for phase in ["file scan", "import", "resource loading", "total"] {
+        assert!(
+            timing_output.contains(&format!("timing: {phase} ")),
+            "{timing_output}"
+        );
+    }
     assert_eq!(
         String::from_utf8(clean.stdout).unwrap(),
         "check passed: checked 1 scripts, 1 scenes, 1 resources\n"
@@ -101,6 +112,7 @@ fn checks_project_scripts_scenes_and_resources() {
         .output()
         .unwrap();
     assert!(colored.status.success());
+    assert!(!String::from_utf8_lossy(&colored.stderr).contains("timing:"));
     assert_eq!(
         String::from_utf8(colored.stdout).unwrap(),
         "\x1b[32mcheck passed: checked 1 scripts, 1 scenes, 1 resources\x1b[0m\n"

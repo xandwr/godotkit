@@ -6,6 +6,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Output},
+    time::Instant,
 };
 
 use serde::Deserialize;
@@ -14,6 +15,35 @@ use crate::cli::CheckArgs;
 
 const HARNESS: &str = include_str!("check.gd");
 const RESULT_PREFIX: &str = "GDKIT_CHECK_RESULT:";
+
+struct PhaseTimer {
+    start: Instant,
+    name: &'static str,
+    enabled: bool,
+}
+
+impl PhaseTimer {
+    fn new(name: &'static str, enabled: bool) -> Self {
+        Self {
+            start: Instant::now(),
+            name,
+            enabled,
+        }
+    }
+}
+
+impl Drop for PhaseTimer {
+    fn drop(&mut self) {
+        if self.enabled {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "timing: {} {:.1} ms",
+                self.name,
+                self.start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct HarnessResult {
@@ -271,6 +301,8 @@ fn print_summary(failed: bool, counts: Option<&Counts>) -> io::Result<()> {
 }
 
 pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let _total = PhaseTimer::new("total", args.timings);
+    let scan_timer = PhaseTimer::new("file scan", args.timings);
     let project = crate::engine::project_root(&args.project)?;
     let paths =
         crate::project_files::collect(&project, &["gd", "tscn", "scn", "tres", "res", "gdshader"])?;
@@ -287,22 +319,31 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
     let manifest = TemporaryScript::create(&serde_json::to_vec(&paths)?, "json")?;
+    drop(scan_timer);
+    let mut validation_timer = PhaseTimer::new("engine validation (probe)", args.timings);
     let engine = crate::engine::resolve(&project, args.godot.as_deref())?;
-    let version = crate::engine::probe(&engine)?;
+    let (version, cached) = crate::engine::validated_version(&engine, &project)?;
+    if cached {
+        validation_timer.name = "engine validation (cached)";
+    }
+    drop(validation_timer);
     eprintln!(
         "engine: {} ({version})",
         crate::engine::display_path(&engine)
     );
 
+    let import_timer = PhaseTimer::new("import", args.timings);
     let import = engine_output(
         &engine,
         &project,
         &[OsStr::new("--import"), OsStr::new("--quiet")],
     )?;
+    drop(import_timer);
     let mut failed = !import.status.success() || has_errors(&import);
     write_diagnostics(&import, "Import", &project, &paths, args.verbose)?;
 
     let harness = TemporaryScript::create(HARNESS.as_bytes(), "gd")?;
+    let loading_timer = PhaseTimer::new("resource loading", args.timings);
     let check = engine_output(
         &engine,
         &project,
@@ -313,6 +354,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
             manifest.0.as_os_str(),
         ],
     )?;
+    drop(loading_timer);
     let check_failed = !check.status.success() || has_errors(&check);
     write_diagnostics(&check, "Resource loading", &project, &paths, args.verbose)?;
     let result = match harness_result(&check) {

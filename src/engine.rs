@@ -2,9 +2,11 @@ use std::{
     env,
     error::Error,
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
+    time::SystemTime,
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +29,99 @@ struct EngineConfig {
 struct ProbeResult {
     compatible: bool,
     version: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+struct EngineFile {
+    path: PathBuf,
+    size: u64,
+    modified: SystemTime,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+struct ProbeKey {
+    files: Vec<EngineFile>,
+    implementation: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CachedProbe {
+    key: ProbeKey,
+    version: String,
+}
+
+fn probe_key(engine: &Path) -> std::io::Result<ProbeKey> {
+    let engine = fs::canonicalize(engine)?;
+    let mut paths = vec![engine.clone()];
+    if cfg!(windows)
+        && let Some(name) = engine.file_name().and_then(|name| name.to_str())
+    {
+        let companion = name
+            .strip_suffix("_console.exe")
+            .or_else(|| name.strip_suffix(".console.exe"))
+            .map(|stem| engine.with_file_name(format!("{stem}.exe")));
+        if let Some(path) = companion.filter(|path| path.is_file()) {
+            paths.push(path);
+        }
+    }
+    let files = paths
+        .into_iter()
+        .map(|path| {
+            let metadata = fs::metadata(&path)?;
+            Ok(EngineFile {
+                path,
+                size: metadata.len(),
+                modified: metadata.modified()?,
+            })
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let mut implementation = DefaultHasher::new();
+    include_str!("engine.rs").hash(&mut implementation);
+    include_str!("probe.gd").hash(&mut implementation);
+    include_str!("check.gd").hash(&mut implementation);
+    Ok(ProbeKey {
+        files,
+        implementation: implementation.finish(),
+    })
+}
+
+fn cached_probe(
+    engine: &Path,
+    cache: &Path,
+    validate: impl FnOnce(&Path) -> Result<String, Box<dyn Error>>,
+) -> Result<(String, bool), Box<dyn Error>> {
+    let key = probe_key(engine).ok();
+    if let Some(key) = &key
+        && let Some(cached) = fs::read(cache)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<CachedProbe>(&bytes).ok())
+            .filter(|cached| cached.key == *key && !cached.version.is_empty())
+    {
+        return Ok((cached.version, true));
+    }
+    let version = validate(engine)?;
+    if let Some(key) = key
+        && probe_key(engine).ok().as_ref() == Some(&key)
+    {
+        let cached = CachedProbe {
+            key,
+            version: version.clone(),
+        };
+        if let (Some(parent), Ok(bytes)) = (cache.parent(), serde_json::to_vec(&cached))
+            && fs::create_dir_all(parent).is_ok()
+        {
+            let _ = fs::write(cache, bytes);
+        }
+    }
+    Ok((version, false))
+}
+
+pub fn validated_version(engine: &Path, project: &Path) -> Result<(String, bool), Box<dyn Error>> {
+    cached_probe(
+        engine,
+        &project.join(".godot/gdkit/engine-probe.json"),
+        probe,
+    )
 }
 
 struct ProbeDirectory(PathBuf);
@@ -156,7 +251,7 @@ pub fn init(args: InitArgs) -> Result<ExitCode, Box<dyn Error>> {
         );
     }
     let engine = resolve(&project, args.godot.as_deref())?;
-    let version = probe(&engine)?;
+    let (version, _) = validated_version(&engine, &project)?;
     let relative = pathdiff::diff_paths(&engine, &project).unwrap_or_else(|| engine.clone());
     let config = Config {
         engine: EngineConfig {
@@ -172,4 +267,93 @@ pub fn init(args: InitArgs) -> Result<ExitCode, Box<dyn Error>> {
     println!("initialized {}", config_path.display());
     eprintln!("engine: {} ({version})", engine.display());
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn cache_reuses_only_successful_matching_probes() {
+        let directory = env::temp_dir().join(format!("gdkit-probe-cache-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let _cleanup = ProbeDirectory(directory.clone());
+        let engine = directory.join("engine.exe");
+        let cache = directory.join("cache/probe.json");
+        fs::write(&engine, "engine").unwrap();
+        let calls = Cell::new(0);
+        let validate = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Ok("4.test".to_owned())
+        };
+        assert_eq!(
+            cached_probe(&engine, &cache, validate).unwrap(),
+            ("4.test".into(), false)
+        );
+        assert!(cached_probe(&engine, &cache, validate).unwrap().1);
+        assert_eq!(calls.get(), 1);
+
+        fs::write(&engine, "new engine").unwrap();
+        assert!(!cached_probe(&engine, &cache, validate).unwrap().1);
+        let modified = fs::metadata(&engine).unwrap().modified().unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&engine)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new().set_modified(modified + std::time::Duration::from_secs(2)),
+            )
+            .unwrap();
+        assert!(!cached_probe(&engine, &cache, validate).unwrap().1);
+        let other_engine = directory.join("other.exe");
+        fs::copy(&engine, &other_engine).unwrap();
+        assert!(!cached_probe(&other_engine, &cache, validate).unwrap().1);
+
+        let mut entry: CachedProbe = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        entry.key.implementation ^= 1;
+        fs::write(&cache, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(!cached_probe(&other_engine, &cache, validate).unwrap().1);
+        fs::write(&cache, "partial json").unwrap();
+        assert!(!cached_probe(&other_engine, &cache, validate).unwrap().1);
+        assert_eq!(calls.get(), 6);
+
+        fs::remove_file(&cache).unwrap();
+        assert!(cached_probe(&engine, &cache, |_| Err("failed probe".into())).is_err());
+        assert!(!cache.exists());
+        assert!(!cached_probe(&engine, &cache, validate).unwrap().1);
+        assert!(
+            !cached_probe(&engine, &engine.join("unwritable.json"), validate)
+                .unwrap()
+                .1
+        );
+
+        fs::remove_file(&cache).unwrap();
+        cached_probe(&engine, &cache, |_| {
+            fs::write(&engine, "changed during probe").unwrap();
+            Ok("4.test".into())
+        })
+        .unwrap();
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn console_cache_tracks_companion_engine() {
+        let directory = env::temp_dir().join(format!("gdkit-console-cache-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let _cleanup = ProbeDirectory(directory.clone());
+        for name in ["godot_console.exe", "godot.console.exe"] {
+            let launcher = directory.join(name);
+            let companion = directory.join("godot.exe");
+            fs::write(&launcher, "launcher").unwrap();
+            fs::write(&companion, "engine").unwrap();
+            let before = probe_key(&launcher).unwrap();
+            assert_eq!(before.files.len(), 2);
+            fs::write(&companion, "updated engine").unwrap();
+            assert!(before != probe_key(&launcher).unwrap());
+            fs::remove_file(&companion).unwrap();
+            assert!(before != probe_key(&launcher).unwrap());
+        }
+    }
 }

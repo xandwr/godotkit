@@ -41,6 +41,11 @@ pub struct CheckArgs {
     pub godot: Option<PathBuf>,
     #[arg(long, help = "Show full Godot output, including engine stack traces")]
     pub verbose: bool,
+    #[arg(
+        long,
+        help = "Show file scan, engine validation, import, resource loading, and total times"
+    )]
+    pub timings: bool,
 }
 
 #[derive(Debug, Args)]
