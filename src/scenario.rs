@@ -391,15 +391,62 @@ fn create_run(project: &Path, run: &ScenarioRun) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn replace_record(temporary: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(temporary, path)
+}
+
+#[cfg(windows)]
+fn replace_record(temporary: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
+
+    let path: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let temporary: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe {
+        ReplaceFileW(
+            path.as_ptr(),
+            temporary.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn update_run(project: &Path, run: &ScenarioRun) -> Result<(), Box<dyn Error>> {
     let bytes = serde_json::to_vec_pretty(run)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(run_path(project, run))?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    Ok(())
+    let path = run_path(project, run);
+    let mut attempt = 0;
+    let (temporary, mut file) = loop {
+        let temporary = path.with_extension(format!("json.{}-{attempt}.tmp", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt < 100 => {
+                attempt += 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let result = (|| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        replace_record(&temporary, &path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(Into::into)
 }
 
 fn read_runs(project: &Path) -> Result<Vec<ScenarioRun>, Box<dyn Error>> {
@@ -861,6 +908,45 @@ pub(crate) fn run(args: ScenarioArgs) -> Result<ExitCode, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_run_atomically_replaces_the_record() {
+        let project = std::env::temp_dir().join(format!(
+            "gdkit-scenario-record-{}-{}",
+            std::process::id(),
+            timestamp()
+        ));
+        let mut run = ScenarioRun {
+            schema_version: SCENARIO_SCHEMA_VERSION,
+            name: "atomic".into(),
+            generation: "test".into(),
+            transport: ScenarioTransport::DedicatedEnet,
+            started_at_unix_ms: timestamp(),
+            ports: BTreeMap::from([("game".into(), 7000)]),
+            participants: Vec::new(),
+            status: ScenarioRunStatus::Starting,
+            failure: None,
+        };
+        create_run(&project, &run).unwrap();
+
+        run.status = ScenarioRunStatus::Failed;
+        run.failure = Some(ScenarioFailure {
+            participant: "server".into(),
+            phase: ScenarioFailurePhase::Readiness,
+            message: "timed out".into(),
+            occurred_at_unix_ms: timestamp(),
+        });
+        update_run(&project, &run).unwrap();
+
+        let path = run_path(&project, &run);
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            serde_json::to_vec_pretty(&run).unwrap()
+        );
+        assert_eq!(read_runs(&project).unwrap().len(), 1);
+        assert_eq!(fs::read_dir(records_root(&project)).unwrap().count(), 1);
+        fs::remove_dir_all(project).unwrap();
+    }
 
     #[test]
     fn validates_explicit_transports_and_expands_named_ports() {
