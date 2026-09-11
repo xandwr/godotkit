@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub const CHECK_REPORT_SCHEMA_VERSION: u32 = 1;
+pub const CHECK_REPORT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckReport {
@@ -47,6 +47,7 @@ pub struct CheckCounts {
     pub scenes: usize,
     pub resources: usize,
     pub smoke_scenes: usize,
+    pub project_scripts: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +94,7 @@ pub enum CheckPhase {
     Import,
     ResourceLoading,
     SceneSmoke,
+    ProjectScript,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +247,7 @@ mod tests {
             scenes: 1,
             resources: 1,
             smoke_scenes: 0,
+            project_scripts: 0,
         });
         report.diagnostics.push(Diagnostic {
             sequence: 0,
@@ -282,7 +285,7 @@ mod tests {
         });
 
         let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"schema_version\":2"));
         assert!(json.contains("\"outcome\":\"validation_failed\""));
         assert!(json.contains("\"kind\":\"scene_smoke\""));
         assert!(json.contains("\"stream\":\"stderr\""));

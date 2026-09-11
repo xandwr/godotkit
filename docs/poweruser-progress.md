@@ -4,7 +4,7 @@ Companion to the [poweruser roadmap](poweruser-roadmap.md). The roadmap explains
 direction and tradeoffs; this document tracks delivery, validation, and decisions.
 Command names below are proposed interfaces until their milestone is delivered.
 
-Created: 2026-09-10. Last updated: 2026-09-10.
+Created: 2026-09-10. Last updated: 2026-09-11.
 
 ## How to maintain this tracker
 
@@ -43,7 +43,7 @@ independent design work can proceed before prerequisite implementations finish.
 | 5 | [M05 Named sessions](#m05-named-sessions) | P1 | Planned | M01, M02 | Launch, logs, status, stop, restart, stale-session rejection |
 | 6 | [M06 Runtime probe](#m06-runtime-probe) | P1 | Planned | M03, M05 | Fresh observations and verified startup coverage |
 | 7 | [M07 Project graph](#m07-project-graph) | P1 | Planned | M01, engine identity, gdview | Source-backed references, UIDs, inheritance, overrides |
-| 8 | [M08 Scenario protocol](#m08-scenario-protocol) | P2 | Planned | M01, M02, M05; G1 for bridge use | Signal readiness, bounded assertions, failure artifacts |
+| 8 | [M08 Scenario protocol](#m08-scenario-protocol) | P2 | In progress | M01, M02, M05; G1 for bridge use | Signal readiness, bounded assertions, failure artifacts |
 | 9 | [M09 Multiplayer scenarios](#m09-multiplayer-scenarios) | P2 | Planned | M08 | Server, two clients, late join, isolated state, cleanup |
 | 10 | [M10 Performance and visuals](#m10-performance-and-visuals) | P2 | Planned | M08, selected G1 adapters | Comparable captures with environment metadata |
 | 11 | [M11 Incremental watch](#m11-incremental-watch) | P2 | Planned | M01, M02, M07 | Results match fresh checks across invalidation cases |
@@ -170,8 +170,11 @@ Blocker: None recorded. Evidence / commits: pending current commit.
 
 [Roadmap section 4](poweruser-roadmap.md#4-named-runtime-sessions).
 
-Status: Planned | Owner: Unassigned | Started: - | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: None recorded.
+Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
+Blocker: None recorded. Evidence / commits: Project-owned `SceneTree` scripts now
+run through `gdkit check --script` with deadlines, diagnostics, and durable phase
+artifacts. `--isolated` provides a fresh temporary project without changing the
+source project's imported state. Named protocol messages and readiness remain.
 
 - [ ] M05.01 Define durable session records: project, engine, scene, arguments,
   renderer, run ID, source fingerprint, logs, generation, and lifecycle.
@@ -457,6 +460,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-11 | M08.02-M08.03 partial | Added bounded project-owned script checks and isolated fresh-project execution through the common report and artifact pipeline | `src/check.rs`, `src/report.rs`, `tests/check.rs`; validated against Pill Poppers infrastructure contract on custom Godot 4.7.3; next define named scenario protocol |
 | 2026-09-10 | M01.03-M01.07 partial | Added final JSON check reports and persisted report artifacts with populated diagnostics, phase coverage, fingerprints, suppression counts, and exit-code outcomes | `src/check.rs`, `src/report.rs`, `tests/check.rs`; unit and local Godot validation; next migrate worker capture and add live stdout events |
 | 2026-09-10 | M01.03, M02.01-M02.02 partial | Added shared live stdout/stderr capture with observed ordering, timestamps, process identity, exact stream reconstruction, and deadlines; migrated fresh import, resource loading, and smoke processes | `src/process.rs`, `src/check.rs`; populate reports from captured events and migrate probe/worker lifecycle paths |
 | 2026-09-10 | M01.03 partial | Retained byte-exact stdout/stderr for each executed engine phase and made human diagnostic consolidation report occurrence counts | `src/check.rs`; replace post-exit stream grouping with ordered shared capture before completing M01.03 |

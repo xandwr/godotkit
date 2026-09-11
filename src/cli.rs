@@ -74,6 +74,14 @@ pub struct CheckArgs {
         help = "Smoke-test this scene after validation (repeatable; executes gameplay)"
     )]
     pub scene: Vec<String>,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Run this project-owned SceneTree script after validation (repeatable)"
+    )]
+    pub script: Vec<String>,
+    #[arg(long, requires = "script", default_value = "30", value_parser = clap::value_parser!(u64).range(1..=3600), help = "Wall-clock seconds allowed per project script")]
+    pub script_timeout: u64,
     #[arg(long, requires = "scene", default_value = "2", value_parser = clap::value_parser!(u32).range(1..), help = "Process frames per smoke scene")]
     pub smoke_frames: u32,
     #[arg(long, requires = "scene", default_value = "30", value_parser = clap::value_parser!(u64).range(1..=3600), help = "Wall-clock seconds allowed per smoke scene")]
@@ -96,8 +104,13 @@ pub struct CheckArgs {
     pub fresh: bool,
     #[arg(
         long,
+        help = "Copy the project to a temporary directory and perform a fresh check there"
+    )]
+    pub isolated: bool,
+    #[arg(
+        long,
         conflicts_with = "fresh",
-        conflicts_with_all = ["scene", "strict_methods", "smoke_frames", "smoke_timeout", "output"],
+        conflicts_with_all = ["scene", "script", "strict_methods", "smoke_frames", "smoke_timeout", "script_timeout", "isolated", "output"],
         help = "Stop this project's background import editor without checking"
     )]
     pub stop_worker: bool,

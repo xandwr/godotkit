@@ -116,7 +116,7 @@ fn checks_project_scripts_scenes_and_resources() {
     );
     let report: gdkit::report::CheckReport = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(report.outcome, gdkit::report::CheckOutcome::Passed);
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(report.schema_version, 2);
     assert_eq!(report.completed_phases, report.requested_phases);
     assert_eq!(report.checked.as_ref().unwrap().scripts, 1);
     assert!(report.project.fingerprint.len() == 64);
@@ -127,6 +127,51 @@ fn checks_project_scripts_scenes_and_resources() {
         artifact.kind == gdkit::report::ArtifactKind::Report && artifact.path.is_file()
     }));
     assert!(!String::from_utf8_lossy(&json.stderr).contains("check passed"));
+    fs::write(
+        directory.join("contract.gd"),
+        "extends SceneTree\n\nfunc _initialize() -> void:\n\tprint(\"contract passed\")\n\tquit(0)\n",
+    )
+    .unwrap();
+    let isolated = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "check",
+            directory.to_str().unwrap(),
+            "--isolated",
+            "--script",
+            "res://contract.gd",
+            "--output",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        isolated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&isolated.stderr)
+    );
+    let isolated_report: gdkit::report::CheckReport =
+        serde_json::from_slice(&isolated.stdout).unwrap();
+    assert_eq!(
+        isolated_report.project.root,
+        fs::canonicalize(&directory).unwrap()
+    );
+    assert!(isolated_report.policy.fresh_import);
+    assert_eq!(isolated_report.checked.as_ref().unwrap().project_scripts, 1);
+    assert!(isolated_report.completed_phases.iter().any(|phase| {
+        phase.kind == gdkit::report::CheckPhase::ProjectScript
+            && phase.id == "project_script:1:res://contract.gd"
+    }));
+    assert!(isolated_report.artifacts.iter().any(|artifact| {
+        artifact.phase.as_ref().is_some_and(|phase| {
+            phase.kind == gdkit::report::CheckPhase::ProjectScript
+                && artifact.kind == gdkit::report::ArtifactKind::Stdout
+                && fs::read_to_string(&artifact.path)
+                    .unwrap()
+                    .contains("contract passed")
+        })
+    }));
+    fs::remove_file(directory.join("contract.gd")).unwrap();
     let colored = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .env_remove("GDKIT_GODOT")
         .env_remove("NO_COLOR")

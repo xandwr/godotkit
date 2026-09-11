@@ -98,6 +98,60 @@ impl Drop for TemporaryScript {
     }
 }
 
+struct IsolatedProject(PathBuf);
+
+impl IsolatedProject {
+    fn create(project: &Path) -> Result<Self, Box<dyn Error>> {
+        for attempt in 0..100 {
+            let path =
+                env::temp_dir().join(format!("gdkit-isolated-{}-{attempt}", std::process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    let isolated = Self(path);
+                    copy_project(project, &isolated.0)?;
+                    return Ok(isolated);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err("could not create isolated project directory".into())
+    }
+}
+
+impl Drop for IsolatedProject {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn copy_project(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == ".godot" || name == ".git" {
+            continue;
+        }
+        let source_path = entry.path();
+        let destination_path = destination.join(&name);
+        let metadata = fs::symlink_metadata(&source_path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "isolated checks do not follow symbolic links: {}",
+                source_path.display()
+            )
+            .into());
+        }
+        if metadata.is_dir() {
+            fs::create_dir(&destination_path)?;
+            copy_project(&source_path, &destination_path)?;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &destination_path)?;
+        }
+    }
+    Ok(())
+}
+
 struct CheckArtifacts {
     directory: PathBuf,
 }
@@ -203,6 +257,12 @@ fn requested_phases(args: &CheckArgs) -> Vec<PhaseIdentity> {
         phase("import", CheckPhase::Import),
         phase("resource_loading", CheckPhase::ResourceLoading),
     ];
+    phases.extend(args.script.iter().enumerate().map(|(index, script)| {
+        phase(
+            format!("project_script:{}:{script}", index + 1),
+            CheckPhase::ProjectScript,
+        )
+    }));
     phases.extend(args.scene.iter().enumerate().map(|(index, scene)| {
         phase(
             format!("scene_smoke:{}:{scene}", index + 1),
@@ -391,6 +451,21 @@ fn smoke_output(
         .arg(scene)
         .arg("--quit-after")
         .arg(frames.to_string());
+    crate::process::run(&mut command, Some(Duration::from_secs(timeout)))
+}
+
+fn script_output(
+    engine: &Path,
+    project: &Path,
+    script: &Path,
+    timeout: u64,
+) -> io::Result<CapturedOutput> {
+    let mut command = Command::new(engine);
+    command
+        .args(["--headless", "--no-header", "--path"])
+        .arg(project)
+        .arg("--script")
+        .arg(script);
     crate::process::run(&mut command, Some(Duration::from_secs(timeout)))
 }
 
@@ -684,6 +759,7 @@ struct ExecutionSummary {
     counts: Option<Counts>,
     smoke_count: usize,
     strict_methods: bool,
+    script_count: usize,
 }
 
 fn exit_code(outcome: CheckOutcome) -> ExitCode {
@@ -711,12 +787,13 @@ fn emit_report(
                 )?;
                 if summary.counts.is_some() {
                     eprintln!(
-                        "coverage: resource loading{}; {} scene smoke checks executed",
+                        "coverage: resource loading{}; {} project scripts and {} scene smoke checks executed",
                         if summary.strict_methods {
                             " and strict method validation"
                         } else {
                             " (project warning policy)"
                         },
+                        summary.script_count,
                         summary.smoke_count
                     );
                 }
@@ -741,7 +818,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         },
         CheckPolicy {
             strict_methods: args.strict_methods,
-            fresh_import: args.fresh,
+            fresh_import: args.fresh || args.isolated,
             ignored_import_diagnostics: 0,
         },
     );
@@ -785,8 +862,33 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         "artifacts: {}",
         crate::engine::display_path(&artifacts.directory)
     );
-    let persistent_import = !args.fresh;
-    let result = run_project(&args, &project, &artifacts, &mut report);
+    let isolated = if args.isolated {
+        match IsolatedProject::create(&project) {
+            Ok(isolated) => Some(isolated),
+            Err(error) => {
+                report.outcome = CheckOutcome::ToolFailed;
+                report.failures.push(CheckFailure {
+                    kind: FailureKind::Tool,
+                    phase: None,
+                    message: error.to_string(),
+                });
+                artifacts.preserve_report(&mut report)?;
+                if args.output == CheckOutput::Json {
+                    eprintln!("error: {error}");
+                    emit_report(args.output, &report, None)?;
+                    return Ok(ExitCode::from(2));
+                }
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+    let execution_project = isolated
+        .as_ref()
+        .map_or(project.as_path(), |value| value.0.as_path());
+    let persistent_import = !args.fresh && !args.isolated;
+    let result = run_project(&args, &project, execution_project, &artifacts, &mut report);
     if let Err(error) = &result {
         report.outcome = CheckOutcome::ToolFailed;
         report.failures.push(CheckFailure {
@@ -833,6 +935,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
 
 fn run_project(
     args: &CheckArgs,
+    source_project: &Path,
     project: &Path,
     artifacts: &CheckArtifacts,
     report: &mut CheckReport,
@@ -856,7 +959,23 @@ fn run_project(
             Ok(path)
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-    let config = crate::engine::read_config(project)?;
+    let scripts = args
+        .script
+        .iter()
+        .map(|script| {
+            let path = project.join(script.strip_prefix("res://").unwrap_or(script));
+            let path = fs::canonicalize(&path)
+                .map_err(|error| format!("project script {}: {error}", path.display()))?;
+            if !path.starts_with(fs::canonicalize(project)?)
+                || !path.is_file()
+                || !path.extension().is_some_and(|extension| extension == "gd")
+            {
+                return Err("project scripts must be .gd files inside the project".into());
+            }
+            Ok(path)
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    let config = crate::engine::read_config(source_project)?;
     let strict_methods = args.strict_methods
         || config
             .as_ref()
@@ -882,7 +1001,7 @@ fn run_project(
     report.project.fingerprint = project_fingerprint(project, &paths)?;
     report.policy = CheckPolicy {
         strict_methods,
-        fresh_import: args.fresh,
+        fresh_import: args.fresh || args.isolated,
         ignored_import_diagnostics: rules.len(),
     };
     report
@@ -890,8 +1009,8 @@ fn run_project(
         .push(phase("file_scan", CheckPhase::FileScan));
     drop(scan_timer);
     let mut validation_timer = PhaseTimer::new("engine validation (probe)", args.timings);
-    let engine = crate::engine::resolve(project, args.godot.as_deref())?;
-    let (version, cached) = crate::engine::validated_version(&engine, project)?;
+    let engine = crate::engine::resolve(source_project, args.godot.as_deref())?;
+    let (version, cached) = crate::engine::validated_version(&engine, source_project)?;
     if cached {
         validation_timer.name = "engine validation (cached)";
     }
@@ -916,7 +1035,7 @@ fn run_project(
     let mut sequence_base = 0;
 
     let mut import_timer = PhaseTimer::new("import", args.timings);
-    let import = if args.fresh {
+    let import = if args.fresh || args.isolated {
         crate::import_worker::stop_project(project)?;
         engine_output(
             &engine,
@@ -1050,13 +1169,14 @@ fn run_project(
                 phase: Some(loading_phase),
                 message: error.to_string(),
             });
-            for smoke in report
-                .requested_phases
-                .iter()
-                .filter(|phase| phase.kind == CheckPhase::SceneSmoke)
-            {
+            for runtime in report.requested_phases.iter().filter(|phase| {
+                matches!(
+                    phase.kind,
+                    CheckPhase::SceneSmoke | CheckPhase::ProjectScript
+                )
+            }) {
                 report.skipped_phases.push(SkippedPhase {
-                    phase: smoke.clone(),
+                    phase: runtime.clone(),
                     reason: "resource checks did not complete".into(),
                 });
             }
@@ -1065,6 +1185,7 @@ fn run_project(
                 counts: None,
                 smoke_count: 0,
                 strict_methods,
+                script_count: 0,
             });
         }
     };
@@ -1078,10 +1199,79 @@ fn run_project(
         });
     }
 
+    let mut script_count = 0;
     let mut smoke_count = 0;
     if !failed {
+        for (index, script) in scripts.iter().enumerate() {
+            let script_phase = report
+                .requested_phases
+                .iter()
+                .find(|phase| {
+                    phase.kind == CheckPhase::ProjectScript
+                        && phase
+                            .id
+                            .starts_with(&format!("project_script:{}:", index + 1))
+                })
+                .cloned()
+                .ok_or("project script phase was not registered")?;
+            let label = format!("Project script {}", args.script[index]);
+            let output = script_output(&engine, project, script, args.script_timeout)?;
+            report.artifacts.extend(artifacts.preserve(
+                &format!("project-script-{}", index + 1),
+                &script_phase,
+                &output,
+            )?);
+            report.diagnostics.extend(structured_diagnostics(
+                &output,
+                &script_phase,
+                sequence_base,
+                session_id,
+            ));
+            sequence_base += u64::try_from(output.lines.len()).unwrap_or(u64::MAX);
+            write_diagnostics(&output, &label, project, &paths, args.verbose)?;
+            if output.timed_out {
+                eprintln!("error: {label} exceeded {} seconds", args.script_timeout);
+                report.failures.push(CheckFailure {
+                    kind: FailureKind::Timeout,
+                    phase: Some(script_phase.clone()),
+                    message: format!("exceeded {} seconds", args.script_timeout),
+                });
+            } else {
+                report.completed_phases.push(script_phase.clone());
+            }
+            if !output.output.status.success() && !output.timed_out {
+                report.failures.push(CheckFailure {
+                    kind: FailureKind::ProcessExit,
+                    phase: Some(script_phase.clone()),
+                    message: format!("Godot process exited with {}", output.output.status),
+                });
+            }
+            if has_errors(&output.output) {
+                report.failures.push(CheckFailure {
+                    kind: FailureKind::Diagnostic,
+                    phase: Some(script_phase),
+                    message: "project script reported one or more errors".into(),
+                });
+            }
+            failed |=
+                output.timed_out || !output.output.status.success() || has_errors(&output.output);
+            script_count += 1;
+            if failed {
+                break;
+            }
+        }
+    }
+    if !failed {
         for (index, scene) in scenes.iter().enumerate() {
-            let smoke_phase = report.requested_phases[4 + index].clone();
+            let smoke_phase = report
+                .requested_phases
+                .iter()
+                .find(|phase| {
+                    phase.kind == CheckPhase::SceneSmoke
+                        && phase.id.starts_with(&format!("scene_smoke:{}:", index + 1))
+                })
+                .cloned()
+                .ok_or("scene smoke phase was not registered")?;
             let phase = format!("Scene smoke {}", scene.display());
             let output = smoke_output(
                 &engine,
@@ -1131,16 +1321,30 @@ fn run_project(
                 output.timed_out || !output.output.status.success() || has_errors(&output.output);
             smoke_count += 1;
         }
-    } else if !scenes.is_empty() {
-        eprintln!("Scene smoke checks skipped because resource validation failed.");
-        for smoke in report
+    }
+    if failed {
+        if script_count < scripts.len() || smoke_count < scenes.len() {
+            eprintln!("Remaining runtime checks skipped because an earlier phase failed.");
+        }
+        let skipped: Vec<_> = report
             .requested_phases
             .iter()
-            .filter(|phase| phase.kind == CheckPhase::SceneSmoke)
-        {
+            .filter(|phase| {
+                matches!(
+                    phase.kind,
+                    CheckPhase::SceneSmoke | CheckPhase::ProjectScript
+                ) && !report.completed_phases.contains(phase)
+                    && !report
+                        .skipped_phases
+                        .iter()
+                        .any(|skipped| skipped.phase == **phase)
+            })
+            .cloned()
+            .collect();
+        for runtime in skipped {
             report.skipped_phases.push(SkippedPhase {
-                phase: smoke.clone(),
-                reason: "resource validation failed".into(),
+                phase: runtime,
+                reason: "an earlier phase failed".into(),
             });
         }
     }
@@ -1149,6 +1353,7 @@ fn run_project(
         scenes: result.counts.scenes,
         resources: result.counts.resources,
         smoke_scenes: smoke_count,
+        project_scripts: script_count,
     });
     report.outcome = if failed {
         CheckOutcome::ValidationFailed
@@ -1159,12 +1364,38 @@ fn run_project(
         counts: Some(result.counts),
         smoke_count,
         strict_methods,
+        script_count,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_projects_copy_sources_without_tool_state() {
+        let source = env::temp_dir().join(format!("gdkit-copy-source-{}", std::process::id()));
+        let destination =
+            env::temp_dir().join(format!("gdkit-copy-destination-{}", std::process::id()));
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::create_dir(source.join("scripts")).unwrap();
+        fs::create_dir(source.join(".godot")).unwrap();
+        fs::create_dir(source.join(".git")).unwrap();
+        fs::write(source.join("project.godot"), "config_version=5\n").unwrap();
+        fs::write(source.join("scripts/player.gd"), "extends Node\n").unwrap();
+        fs::write(source.join(".godot/cache"), "cache").unwrap();
+        fs::write(source.join(".git/config"), "git").unwrap();
+
+        copy_project(&source, &destination).unwrap();
+
+        assert!(destination.join("project.godot").is_file());
+        assert!(destination.join("scripts/player.gd").is_file());
+        assert!(!destination.join(".godot").exists());
+        assert!(!destination.join(".git").exists());
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(destination).unwrap();
+    }
 
     #[test]
     fn zero_exit_script_errors_fail_on_either_stream() {

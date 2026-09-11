@@ -18,6 +18,7 @@ cargo run -- init --godot /path/to/godot
 cargo run -- api CharacterBody3D move_and_slide
 cargo run -- api search multiplayer
 cargo run -- check /path/to/project
+cargo run -- check /path/to/project --isolated --script res://tests/contract.gd
 cargo test
 cargo test --test godot -- --ignored
 GODOT_SOURCE=/path/to/godot cargo test --test corpus -- --ignored
@@ -140,6 +141,19 @@ files so a verbose or blocked scene cannot fill a pipe and deadlock the runner.
 The frame budget only covers startup; smoke success does not validate later
 interactions, multiplayer behavior, or rendering correctness. Resource-validation
 failures skip scene execution, and the coverage line reports the number run.
+
+Use `--script res://tests/contract.gd` to run a project-owned `SceneTree` script
+after resource validation. Repeat the option to run multiple scripts. Each script
+runs in a fresh headless process and must terminate itself with an appropriate
+exit status. `--script-timeout 30` controls the per-script deadline. Failures,
+timeouts, engine diagnostics, and original output use the same report and
+artifact contract as the rest of the check.
+
+Use `gdkit check --isolated` to copy the project, excluding `.godot` and `.git`,
+to a temporary directory and perform a fresh check there. Engine selection,
+configuration, reports, and retained artifacts remain associated with the source
+project. The temporary copy is removed after all processes finish. Symbolic links
+are rejected rather than followed across the isolated boundary.
 
 By default, the import editor stays alive for five minutes after its last request.
 Subsequent checks ask it to scan again and update changed script classes, avoiding
