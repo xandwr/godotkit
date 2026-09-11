@@ -109,13 +109,25 @@ dynamic targets and unsupported source surfaces are reported as unknowns.
 gdkit net
 gdkit net game --output json
 gdkit net --godot /path/to/godot
+gdkit net explain LobbyCoordinator._request_start_match --project game
 ```
 
 The command currently covers GDScript and `.tscn` files discovered through the
-normal project ignore policy. It reports serialized replication node identity,
-but arbitrary replication properties and live peer state remain future project
-graph and runtime-inspection work. Engine selection follows the same precedence
-as `api` and `check`.
+normal project ignore policy. `net explain` relates each statically resolvable RPC
+call to endpoints on the same receiver, including the receiver's multiplayer
+subtree, recipient, effective RPC permission and delivery configuration, sender
+identity reads, and the node path that must agree across peers. Autoload receivers
+resolve to `/root/<name>`; scene receivers retain their scene-local path and source
+scene. Calls with dynamic receivers stay explicitly unresolved.
+
+Serialized `MultiplayerSpawner` and `MultiplayerSynchronizer` contracts include
+spawn and synchronization roots, spawnable scenes and limits,
+`SceneReplicationConfig` property modes, related replication nodes in the same
+scene, and authority assignments made by scripts attached in that scene. Source
+calls to `SceneTree.set_multiplayer` identify additional `MultiplayerAPI` subtree
+roots; `/root` is always reported as the default context. Live peer state and
+runtime-created nodes remain outside static inspection. Engine selection follows
+the same precedence as `api` and `check`.
 
 `check` runs the selected editor headlessly, imports the project, and loads every
 GDScript, scene, resource, and Godot shader outside ignored and hidden directories.

@@ -8,8 +8,9 @@ use std::{
 };
 
 use gdkit::net_report::{
-    LifecycleFinding, NET_REPORT_SCHEMA_VERSION, NetAutoload, NetCoverage, NetEngine, NetReport,
-    ReplicationNode, RpcCall, RpcEndpoint, SourceFinding, SourceLocation,
+    AuthorityAssignment, LifecycleFinding, MultiplayerContext, NET_REPORT_SCHEMA_VERSION,
+    NetAutoload, NetCoverage, NetEngine, NetReport, ReplicationNode, ReplicationProperty, RpcCall,
+    RpcContract, RpcContractEndpoint, RpcEndpoint, SourceFinding, SourceLocation,
 };
 use gdview::syntax::{
     SyntaxKind as K,
@@ -20,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    cli::{NetArgs, NetOutput},
+    cli::{NetArgs, NetCommand, NetExplainArgs, NetOutput},
     engine, project_files,
 };
 
@@ -52,6 +53,7 @@ impl Drop for TemporaryFile {
 struct SourceFunction {
     signature: String,
     line: usize,
+    end_line: usize,
     rpc_line: Option<usize>,
 }
 
@@ -63,6 +65,8 @@ struct SourceIndex {
     peer_assignments: Vec<SourceFinding>,
     lifecycle: Vec<LifecycleFinding>,
     authority: Vec<SourceFinding>,
+    authority_assignments: Vec<AuthorityAssignment>,
+    multiplayer_contexts: Vec<MultiplayerContext>,
     unknowns: Vec<String>,
 }
 
@@ -199,6 +203,7 @@ fn collect_functions(
                         SourceFunction {
                             signature: function_signature(function),
                             line: node_line(source, child),
+                            end_line: source_line(source, child.range().end),
                             rpc_line,
                         },
                     );
@@ -226,18 +231,27 @@ fn rpc_call(callee: &str, arguments: &[String], source: SourceLocation) -> Optio
         return Some(RpcCall {
             method: arguments
                 .get(2)
-                .cloned()
+                .map(|method| method.trim_start_matches('&').trim_matches('"').to_owned())
                 .unwrap_or_else(|| "dynamic".into()),
             kind: "MultiplayerAPI.rpc".into(),
+            expression: format!("{callee}({})", arguments.join(", ")),
+            receiver: arguments.get(1).cloned(),
             target: arguments.first().cloned(),
             source,
         });
     }
     for (suffix, kind) in [(".rpc_id", "rpc_id"), (".rpc", "rpc")] {
         if let Some(receiver) = callee.strip_suffix(suffix) {
+            let (receiver, method) = receiver
+                .rsplit_once('.')
+                .map_or((None, receiver), |(receiver, method)| {
+                    (Some(receiver.to_owned()), method)
+                });
             return Some(RpcCall {
-                method: receiver.rsplit('.').next().unwrap_or(receiver).to_owned(),
+                method: method.to_owned(),
                 kind: kind.into(),
+                expression: format!("{callee}({})", arguments.join(", ")),
+                receiver,
                 target: (kind == "rpc_id")
                     .then(|| arguments.first().cloned())
                     .flatten(),
@@ -284,6 +298,19 @@ fn scan_script(path: &str, source: &str, index: &mut SourceIndex) {
         if let Some(call) = rpc_call(&callee, &arguments, location.clone()) {
             index.rpc_calls.push(call);
         }
+        if callee.ends_with(".set_multiplayer") || callee == "set_multiplayer" {
+            index.multiplayer_contexts.push(MultiplayerContext {
+                multiplayer_api: arguments
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "dynamic".into()),
+                subtree_root: arguments
+                    .get(1)
+                    .map(|value| node_path_value(value))
+                    .unwrap_or_else(|| "/root".into()),
+                source: Some(location.clone()),
+            });
+        }
         if let Some(class) = callee.strip_suffix(".new")
             && class
                 .rsplit('.')
@@ -326,9 +353,38 @@ fn scan_script(path: &str, source: &str, index: &mut SourceIndex) {
         {
             index.authority.push(SourceFinding {
                 value: format!("{callee}({})", arguments.join(", ")),
+                source: location.clone(),
+            });
+        }
+        if callee == "set_multiplayer_authority" || callee.ends_with(".set_multiplayer_authority") {
+            let node = callee
+                .strip_suffix(".set_multiplayer_authority")
+                .unwrap_or("self");
+            index.authority_assignments.push(AuthorityAssignment {
+                node: node.to_owned(),
+                authority: arguments
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "dynamic".into()),
+                recursive: arguments.get(1).is_none_or(|value| value != "false"),
                 source: location,
             });
         }
+    }
+}
+
+fn node_path_value(value: &str) -> String {
+    let value = value.trim();
+    let inner = value
+        .strip_prefix("NodePath(")
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(value)
+        .trim();
+    let path = inner.strip_prefix('&').unwrap_or(inner).trim_matches('"');
+    if path.is_empty() || path == "." {
+        "/root".into()
+    } else {
+        path.to_owned()
     }
 }
 
@@ -426,6 +482,7 @@ fn replication_nodes(
                 continue;
             }
         };
+        let mut scene_nodes = Vec::new();
         for node in scene.nodes {
             let Some(kind) = node.kind else {
                 continue;
@@ -440,12 +497,21 @@ fn replication_nodes(
                 None | Some(".") => node.name,
                 Some(parent) => format!("{parent}/{}", node.name),
             };
-            nodes.push(ReplicationNode {
+            scene_nodes.push(ReplicationNode {
                 kind,
                 node_path,
                 scene: display.clone(),
+                root_path: None,
+                spawn_path: None,
+                spawn_limit: None,
+                spawnable_scenes: Vec::new(),
+                replication_properties: Vec::new(),
+                related_nodes: Vec::new(),
+                authority_assignments: Vec::new(),
             });
         }
+        enrich_replication_nodes(&source, &mut scene_nodes);
+        nodes.extend(scene_nodes);
     }
     nodes.sort_by(|left, right| {
         left.scene
@@ -455,12 +521,487 @@ fn replication_nodes(
     nodes
 }
 
+#[derive(Default)]
+struct ReplicationPropertyBuilder {
+    path: Option<String>,
+    spawn: Option<bool>,
+    mode: Option<i64>,
+}
+
+fn quoted_values(value: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut chars = value.char_indices().peekable();
+    while let Some((_, character)) = chars.next() {
+        if character != '"' {
+            continue;
+        }
+        let mut output = String::new();
+        let mut escaped = false;
+        for (_, character) in chars.by_ref() {
+            if escaped {
+                output.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                break;
+            } else {
+                output.push(character);
+            }
+        }
+        values.push(output);
+    }
+    values
+}
+
+fn header_attribute(header: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let rest = header.split_once(&needle)?.1;
+    Some(rest.split_once('"')?.0.to_owned())
+}
+
+fn constructor_string(value: &str) -> Option<String> {
+    quoted_values(value).into_iter().next()
+}
+
+fn enrich_replication_nodes(source: &str, nodes: &mut [ReplicationNode]) {
+    let mut current_subresource = None;
+    let mut current_node = None;
+    let mut configurations: HashMap<String, HashMap<usize, ReplicationPropertyBuilder>> =
+        HashMap::new();
+    let mut node_configurations = HashMap::new();
+    for line in source.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            current_subresource = (line.starts_with("[sub_resource")
+                && header_attribute(line, "type").as_deref() == Some("SceneReplicationConfig"))
+            .then(|| header_attribute(line, "id"))
+            .flatten();
+            current_node = if line.starts_with("[node") {
+                let name = header_attribute(line, "name");
+                let parent = header_attribute(line, "parent");
+                name.map(|name| match parent.as_deref() {
+                    None | Some(".") => name,
+                    Some(parent) => format!("{parent}/{name}"),
+                })
+            } else {
+                None
+            };
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if let Some(id) = &current_subresource
+            && let Some(rest) = name.strip_prefix("properties/")
+            && let Some((index, field)) = rest.split_once('/')
+            && let Ok(index) = index.parse::<usize>()
+        {
+            let property = configurations
+                .entry(id.clone())
+                .or_default()
+                .entry(index)
+                .or_default();
+            match field {
+                "path" => property.path = constructor_string(value),
+                "spawn" => property.spawn = Some(value == "true"),
+                "replication_mode" => property.mode = value.parse().ok(),
+                _ => {}
+            }
+        }
+        let Some(node_path) = &current_node else {
+            continue;
+        };
+        let Some(node) = nodes.iter_mut().find(|node| &node.node_path == node_path) else {
+            continue;
+        };
+        match name {
+            "root_path" => node.root_path = constructor_string(value),
+            "spawn_path" => node.spawn_path = constructor_string(value),
+            "spawn_limit" => node.spawn_limit = value.parse().ok(),
+            "_spawnable_scenes" => node.spawnable_scenes = quoted_values(value),
+            "replication_config" => {
+                if let Some(id) = constructor_string(value) {
+                    node_configurations.insert(node_path.clone(), id);
+                }
+            }
+            _ => {}
+        }
+    }
+    for node in nodes {
+        let Some(id) = node_configurations.get(&node.node_path) else {
+            continue;
+        };
+        let Some(properties) = configurations.get(id) else {
+            continue;
+        };
+        let mut properties = properties.iter().collect::<Vec<_>>();
+        properties.sort_by_key(|(index, _)| **index);
+        node.replication_properties = properties
+            .into_iter()
+            .filter_map(|(_, property)| {
+                let mode = property.mode.unwrap_or(1);
+                Some(ReplicationProperty {
+                    path: property.path.clone()?,
+                    spawn: property.spawn.unwrap_or(true),
+                    sync: mode != 0,
+                    mode: match mode {
+                        0 => "never",
+                        1 => "always",
+                        2 => "on_change",
+                        _ => "unknown",
+                    }
+                    .into(),
+                })
+            })
+            .collect();
+    }
+}
+
 fn location_text(location: &SourceLocation) -> String {
     if location.line == 0 {
         location.path.clone()
     } else {
         format!("{}:{}", location.path, location.line)
     }
+}
+
+#[derive(Clone)]
+struct ScriptAnchor {
+    script: String,
+    receiver_path: String,
+    label: String,
+    stable_path: String,
+    scene: Option<String>,
+}
+
+fn script_anchors(
+    project: &Path,
+    scenes: &[PathBuf],
+    autoloads: &[NetAutoload],
+    unknowns: &mut Vec<String>,
+) -> Vec<ScriptAnchor> {
+    let mut anchors = autoloads
+        .iter()
+        .map(|autoload| ScriptAnchor {
+            script: autoload
+                .resolved_path
+                .clone()
+                .unwrap_or_else(|| autoload.path.clone()),
+            receiver_path: format!("/root/{}", autoload.name),
+            label: autoload.name.clone(),
+            stable_path: "autoload on every participant".into(),
+            scene: None,
+        })
+        .collect::<Vec<_>>();
+    for path in scenes {
+        let display = match resource_path(project, path) {
+            Ok(display) => display,
+            Err(error) => {
+                unknowns.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        };
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => {
+                unknowns.push(format!("{display}: {error}"));
+                continue;
+            }
+        };
+        let scene = match gdview::scene::parse(&text) {
+            Ok(scene) => scene,
+            Err(_) => continue,
+        };
+        let resources = scene
+            .external_resources
+            .iter()
+            .map(|resource| (resource.id.as_str(), resource.path.as_str()))
+            .collect::<HashMap<_, _>>();
+        let Some(root) = scene.nodes.iter().find(|node| node.parent.is_none()) else {
+            continue;
+        };
+        for node in &scene.nodes {
+            let Some(script) = node
+                .script
+                .as_deref()
+                .and_then(|id| resources.get(id).copied())
+            else {
+                continue;
+            };
+            let relative = match node.parent.as_deref() {
+                None => root.name.clone(),
+                Some(".") => format!("{}/{}", root.name, node.name),
+                Some(parent) => format!("{}/{parent}/{}", root.name, node.name),
+            };
+            anchors.push(ScriptAnchor {
+                script: script.to_owned(),
+                receiver_path: relative.clone(),
+                label: node.name.clone(),
+                stable_path: format!("scene node {relative} in {display} must match across peers"),
+                scene: Some(display.clone()),
+            });
+        }
+    }
+    anchors
+}
+
+fn link_replication_contracts(
+    nodes: &mut [ReplicationNode],
+    assignments: &[AuthorityAssignment],
+    anchors: &[ScriptAnchor],
+) {
+    let identities = nodes
+        .iter()
+        .map(|node| {
+            (
+                node.scene.clone(),
+                node.kind.clone(),
+                node.node_path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for node in nodes {
+        node.related_nodes = identities
+            .iter()
+            .filter(|(scene, kind, path)| {
+                scene == &node.scene && kind != &node.kind && path != &node.node_path
+            })
+            .map(|(_, kind, path)| format!("{kind} {path}"))
+            .collect();
+        node.authority_assignments = assignments
+            .iter()
+            .filter(|assignment| {
+                anchors.iter().any(|anchor| {
+                    anchor.script == assignment.source.path
+                        && anchor.scene.as_deref() == Some(node.scene.as_str())
+                })
+            })
+            .cloned()
+            .collect();
+    }
+}
+
+fn matching_context(path: &str, contexts: &[MultiplayerContext]) -> String {
+    contexts
+        .iter()
+        .filter(|context| path.starts_with(&context.subtree_root))
+        .max_by_key(|context| context.subtree_root.len())
+        .map_or_else(|| "/root".into(), |context| context.subtree_root.clone())
+}
+
+fn build_rpc_contracts(
+    calls: &[RpcCall],
+    endpoints: &[RpcEndpoint],
+    functions: &HashMap<(String, String), SourceFunction>,
+    authority: &[SourceFinding],
+    contexts: &[MultiplayerContext],
+    anchors: &[ScriptAnchor],
+) -> Vec<RpcContract> {
+    calls
+        .iter()
+        .map(|call| {
+            let receiver_anchor = match call.receiver.as_deref() {
+                None | Some("self") => anchors.iter().find(|anchor| anchor.script == call.source.path),
+                Some(receiver) => anchors.iter().find(|anchor| anchor.label == receiver),
+            };
+            let candidate_script = receiver_anchor
+                .map(|anchor| anchor.script.as_str())
+                .or_else(|| call.receiver.is_none().then_some(call.source.path.as_str()));
+            let mut compatible_endpoints = Vec::new();
+            for endpoint in endpoints.iter().filter(|endpoint| {
+                endpoint.method == call.method
+                    && candidate_script.is_none_or(|script| endpoint.source.path == script)
+            }) {
+                let endpoint_anchors = anchors
+                    .iter()
+                    .filter(|anchor| anchor.script == endpoint.source.path)
+                    .collect::<Vec<_>>();
+                let endpoint_anchors: Vec<Option<&ScriptAnchor>> = if endpoint_anchors.is_empty() {
+                    vec![None]
+                } else {
+                    endpoint_anchors.into_iter().map(Some).collect()
+                };
+                for anchor in endpoint_anchors {
+                    let sender_identity = functions
+                        .get(&(endpoint.source.path.clone(), endpoint.method.clone()))
+                        .map(|function| {
+                            authority
+                                .iter()
+                                .filter(|finding| {
+                                    finding.source.path == endpoint.source.path
+                                        && finding.source.line >= function.line
+                                        && finding.source.line <= function.end_line
+                                        && finding.value.contains("get_remote_sender_id")
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let receiver_path = anchor.map(|anchor| anchor.receiver_path.clone());
+                    compatible_endpoints.push(RpcContractEndpoint {
+                        endpoint: endpoint.clone(),
+                        multiplayer_root: receiver_path
+                            .as_deref()
+                            .map_or_else(|| "/root".into(), |path| matching_context(path, contexts)),
+                        receiver_path,
+                        recipient: match (call.kind.as_str(), call.target.as_deref()) {
+                            ("rpc", _) => "all peers".into(),
+                            (_, Some("1")) => "server peer 1".into(),
+                            (_, Some(target)) => format!("peer {target}"),
+                            _ => "dynamic recipient".into(),
+                        },
+                        stable_path: anchor.map_or_else(
+                            || "the same node path must exist in the multiplayer subtree on every participant".into(),
+                            |anchor| anchor.stable_path.clone(),
+                        ),
+                        sender_identity,
+                    });
+                }
+            }
+            let unresolved_reason = compatible_endpoints.is_empty().then(|| {
+                if candidate_script.is_some() {
+                    "no compatible endpoint was found on the resolved receiver".into()
+                } else {
+                    "the receiver is dynamic, so method-name candidates cannot prove compatibility".into()
+                }
+            });
+            RpcContract {
+                call: call.clone(),
+                compatible_endpoints,
+                unresolved_reason,
+            }
+        })
+        .collect()
+}
+
+fn qualified_call(call: &RpcCall, anchors: &[ScriptAnchor]) -> String {
+    if call.receiver.is_some() || call.kind == "MultiplayerAPI.rpc" {
+        return call.expression.clone();
+    }
+    let Some(anchor) = anchors
+        .iter()
+        .find(|anchor| anchor.script == call.source.path)
+    else {
+        return call.expression.clone();
+    };
+    format!("{}.{}", anchor.label, call.expression)
+}
+
+fn rpc_contract_matches(contract: &RpcContract, query: &str, anchors: &[ScriptAnchor]) -> bool {
+    let qualified = qualified_call(&contract.call, anchors);
+    contract.call.method == query || qualified.starts_with(&format!("{query}."))
+}
+
+fn print_explanation(report: &NetReport, query: &str, anchors: &[ScriptAnchor]) -> bool {
+    let mut matched = false;
+    for contract in &report.rpc_contracts {
+        let qualified = qualified_call(&contract.call, anchors);
+        if !rpc_contract_matches(contract, query, anchors) {
+            continue;
+        }
+        matched = true;
+        println!("RPC contract {}", contract.call.method);
+        println!(
+            "  {}: {} [{}]",
+            if contract.call.target.as_deref() == Some("1") {
+                "Client call"
+            } else {
+                "Call"
+            },
+            qualified,
+            location_text(&contract.call.source)
+        );
+        for endpoint in &contract.compatible_endpoints {
+            println!(
+                "  Receiver: {} [{}]",
+                endpoint
+                    .receiver_path
+                    .as_deref()
+                    .unwrap_or("dynamic node path"),
+                location_text(&endpoint.endpoint.source)
+            );
+            println!("  Permission: {}", endpoint.endpoint.rpc_mode);
+            println!(
+                "  Delivery: {}, {}, channel {}",
+                endpoint.endpoint.transfer_mode,
+                if endpoint.endpoint.call == "call_remote" {
+                    "remote-only"
+                } else {
+                    "local-and-remote"
+                },
+                endpoint.endpoint.channel
+            );
+            println!("  Recipient: {}", endpoint.recipient);
+            if endpoint.sender_identity.is_empty() {
+                println!("  Sender identity: not read in the endpoint body");
+            } else {
+                for sender in &endpoint.sender_identity {
+                    println!(
+                        "  Sender identity: read with {} [{}]",
+                        sender.value,
+                        location_text(&sender.source)
+                    );
+                }
+            }
+            println!(
+                "  Multiplayer context: subtree rooted at {}",
+                endpoint.multiplayer_root
+            );
+            println!("  Stable path: {}", endpoint.stable_path);
+        }
+        if let Some(reason) = &contract.unresolved_reason {
+            println!("  Unresolved: {reason}");
+        }
+    }
+    for node in &report.replication_nodes {
+        if query != node.node_path && query != node.scene && !node.node_path.ends_with(query) {
+            continue;
+        }
+        matched = true;
+        println!("Replication contract {} {}", node.kind, node.node_path);
+        println!("  Scene: {}", node.scene);
+        if let Some(path) = &node.spawn_path {
+            println!("  Spawn path: {path}");
+        }
+        if let Some(path) = &node.root_path {
+            println!("  Synchronization root: {path}");
+        }
+        if let Some(limit) = node.spawn_limit {
+            println!("  Spawn limit: {limit}");
+        }
+        for scene in &node.spawnable_scenes {
+            println!("  Spawnable scene: {scene}");
+        }
+        for property in &node.replication_properties {
+            println!(
+                "  Property: {} [spawn: {}; sync: {}; mode: {}]",
+                property.path, property.spawn, property.sync, property.mode
+            );
+        }
+        for related in &node.related_nodes {
+            println!("  Related node: {related}");
+        }
+        for assignment in &node.authority_assignments {
+            println!(
+                "  Authority: {} assigned to peer {}{} [{}]",
+                assignment.node,
+                assignment.authority,
+                if assignment.recursive {
+                    " recursively"
+                } else {
+                    ""
+                },
+                location_text(&assignment.source)
+            );
+        }
+        println!(
+            "  Stable path: scene node paths and authority assignments must match across peers"
+        );
+    }
+    matched
 }
 
 fn print_findings(label: &str, findings: &[SourceFinding]) {
@@ -502,6 +1043,24 @@ fn print_human(report: &NetReport) {
             } else {
                 ""
             }
+        );
+    }
+    println!(
+        "\nMultiplayer contexts ({}):",
+        report.multiplayer_contexts.len()
+    );
+    for context in &report.multiplayer_contexts {
+        println!(
+            "  {} -> {}{}",
+            context.multiplayer_api,
+            context.subtree_root,
+            context
+                .source
+                .as_ref()
+                .map_or(String::new(), |source| format!(
+                    " [{}]",
+                    location_text(source)
+                ))
         );
     }
     println!("\nRPC endpoints ({}):", report.rpc_endpoints.len());
@@ -554,11 +1113,56 @@ fn print_human(report: &NetReport) {
     println!();
     print_findings("Authority and peer identity uses", &report.authority);
     println!(
+        "\nAuthority assignments ({}):",
+        report.authority_assignments.len()
+    );
+    for assignment in &report.authority_assignments {
+        println!(
+            "  {} -> peer {}{} [{}]",
+            assignment.node,
+            assignment.authority,
+            if assignment.recursive {
+                " recursively"
+            } else {
+                ""
+            },
+            location_text(&assignment.source)
+        );
+    }
+    println!(
         "\nScene replication nodes ({}):",
         report.replication_nodes.len()
     );
     for node in &report.replication_nodes {
         println!("  {} {} [{}]", node.kind, node.node_path, node.scene);
+        if let Some(path) = &node.spawn_path {
+            println!("    spawn path: {path}");
+        }
+        if let Some(path) = &node.root_path {
+            println!("    synchronization root: {path}");
+        }
+        for property in &node.replication_properties {
+            println!(
+                "    {} [spawn: {}; sync: {}; mode: {}]",
+                property.path, property.spawn, property.sync, property.mode
+            );
+        }
+        for related in &node.related_nodes {
+            println!("    related: {related}");
+        }
+        for assignment in &node.authority_assignments {
+            println!(
+                "    authority: {} -> peer {}{} [{}]",
+                assignment.node,
+                assignment.authority,
+                if assignment.recursive {
+                    " recursively"
+                } else {
+                    ""
+                },
+                location_text(&assignment.source)
+            );
+        }
     }
     if !report.unknowns.is_empty() {
         println!("\nUnknown or incomplete ({}):", report.unknowns.len());
@@ -579,8 +1183,17 @@ fn sort_source_findings(findings: &mut [SourceFinding]) {
 }
 
 pub fn run(args: NetArgs) -> Result<ExitCode, Box<dyn Error>> {
-    let project = engine::project_root(&args.project)?;
-    let engine_path = engine::resolve(&project, args.godot.as_deref())?;
+    let (project_argument, godot_argument, output, explanation) = match args.command {
+        Some(NetCommand::Explain(NetExplainArgs {
+            query,
+            project,
+            godot,
+            output,
+        })) => (project, godot, output, Some(query)),
+        None => (args.project, args.godot, args.output, None),
+    };
+    let project = engine::project_root(&project_argument)?;
+    let engine_path = engine::resolve(&project, godot_argument.as_deref())?;
     let scripts = project_files::collect(&project, &["gd"])?;
     let scenes = project_files::collect(&project, &["tscn"])?;
     let csharp_scripts = project_files::collect(&project, &["cs"])?;
@@ -609,6 +1222,25 @@ pub fn run(args: NetArgs) -> Result<ExitCode, Box<dyn Error>> {
     sort_source_findings(&mut source.peer_constructions);
     sort_source_findings(&mut source.peer_assignments);
     sort_source_findings(&mut source.authority);
+    source.authority_assignments.sort_by(|left, right| {
+        left.source
+            .path
+            .cmp(&right.source.path)
+            .then_with(|| left.source.line.cmp(&right.source.line))
+    });
+    source.multiplayer_contexts.sort_by(|left, right| {
+        left.subtree_root.cmp(&right.subtree_root).then_with(|| {
+            left.source
+                .as_ref()
+                .map(|source| (&source.path, source.line))
+                .cmp(
+                    &right
+                        .source
+                        .as_ref()
+                        .map(|source| (&source.path, source.line)),
+                )
+        })
+    });
     source.rpc_calls.sort_by(|left, right| {
         left.source
             .path
@@ -670,7 +1302,7 @@ pub fn run(args: NetArgs) -> Result<ExitCode, Box<dyn Error>> {
                 .map(|finding| finding.source.path.as_str()),
         )
         .collect();
-    let autoloads = gdview::Project::open(&project)?
+    let autoloads: Vec<NetAutoload> = gdview::Project::open(&project)?
         .autoloads()?
         .entries()
         .iter()
@@ -690,7 +1322,27 @@ pub fn run(args: NetArgs) -> Result<ExitCode, Box<dyn Error>> {
             }
         })
         .collect();
-    let replication_nodes = replication_nodes(&project, &scenes, &mut source.unknowns);
+    let mut replication_nodes = replication_nodes(&project, &scenes, &mut source.unknowns);
+    let mut multiplayer_contexts = vec![MultiplayerContext {
+        subtree_root: "/root".into(),
+        multiplayer_api: "default MultiplayerAPI".into(),
+        source: None,
+    }];
+    multiplayer_contexts.extend(source.multiplayer_contexts.iter().cloned());
+    let anchors = script_anchors(&project, &scenes, &autoloads, &mut source.unknowns);
+    link_replication_contracts(
+        &mut replication_nodes,
+        &source.authority_assignments,
+        &anchors,
+    );
+    let rpc_contracts = build_rpc_contracts(
+        &source.rpc_calls,
+        &endpoints,
+        &source.functions,
+        &source.authority,
+        &multiplayer_contexts,
+        &anchors,
+    );
     let report = NetReport {
         schema_version: NET_REPORT_SCHEMA_VERSION,
         project: engine::display_path(&project),
@@ -704,18 +1356,55 @@ pub fn run(args: NetArgs) -> Result<ExitCode, Box<dyn Error>> {
             languages: vec!["GDScript".into()],
         },
         autoloads,
+        multiplayer_contexts,
         rpc_endpoints: endpoints,
         rpc_calls: source.rpc_calls,
+        rpc_contracts,
         peer_constructions: source.peer_constructions,
         peer_assignments: source.peer_assignments,
         lifecycle: source.lifecycle,
         authority: source.authority,
+        authority_assignments: source.authority_assignments,
         replication_nodes,
         unknowns: source.unknowns,
     };
-    match args.output {
-        NetOutput::Human => print_human(&report),
-        NetOutput::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+    match (explanation, output) {
+        (Some(query), NetOutput::Human) => {
+            if !print_explanation(&report, &query, &anchors) {
+                eprintln!("no multiplayer contract matched {query}");
+                return Ok(ExitCode::from(1));
+            }
+        }
+        (Some(query), NetOutput::Json) => {
+            let contracts = report
+                .rpc_contracts
+                .iter()
+                .filter(|contract| rpc_contract_matches(contract, &query, &anchors))
+                .collect::<Vec<_>>();
+            let replication = report
+                .replication_nodes
+                .iter()
+                .filter(|node| {
+                    node.node_path == query
+                        || node.scene == query
+                        || node.node_path.ends_with(&query)
+                })
+                .collect::<Vec<_>>();
+            if contracts.is_empty() && replication.is_empty() {
+                eprintln!("no multiplayer contract matched {query}");
+                return Ok(ExitCode::from(1));
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "schema_version": NET_REPORT_SCHEMA_VERSION,
+                    "rpc_contracts": contracts,
+                    "replication_nodes": replication,
+                }))?
+            );
+        }
+        (None, NetOutput::Human) => print_human(&report),
+        (None, NetOutput::Json) => println!("{}", serde_json::to_string_pretty(&report)?),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -763,6 +1452,7 @@ func setup(peer: MultiplayerPeer) -> void:
             SourceFunction {
                 signature: "func request(value: int) -> void".into(),
                 line: 4,
+                end_line: 5,
                 rpc_line: Some(3),
             },
         );
@@ -785,5 +1475,79 @@ func setup(peer: MultiplayerPeer) -> void:
         assert_eq!(endpoints[0].transfer_mode, "reliable");
         assert_eq!(endpoints[0].source.line, 3);
         assert!(!endpoints[0].inherited);
+    }
+
+    #[test]
+    fn scans_multiplayer_contexts_and_structured_authority_assignments() {
+        let source = r#"extends Node
+
+func configure(api: MultiplayerAPI, peer_id: int) -> void:
+	get_tree().set_multiplayer(api, NodePath("/root/Match"))
+	$Player.set_multiplayer_authority(peer_id, false)
+"#;
+        let mut index = SourceIndex::default();
+        scan_script("res://match.gd", source, &mut index);
+        assert_eq!(index.multiplayer_contexts.len(), 1);
+        assert_eq!(index.multiplayer_contexts[0].subtree_root, "/root/Match");
+        assert_eq!(index.authority_assignments.len(), 1);
+        assert_eq!(index.authority_assignments[0].node, "$Player");
+        assert_eq!(index.authority_assignments[0].authority, "peer_id");
+        assert!(!index.authority_assignments[0].recursive);
+    }
+
+    #[test]
+    fn reads_spawner_synchronizer_and_replication_properties() {
+        let source = r#"[gd_scene load_steps=2 format=3]
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_sync"]
+properties/0/path = NodePath(".:position")
+properties/0/spawn = true
+properties/0/replication_mode = 2
+
+[node name="Player" type="Node3D"]
+
+[node name="Spawner" type="MultiplayerSpawner" parent="."]
+spawn_path = NodePath("../Players")
+spawn_limit = 10
+_spawnable_scenes = PackedStringArray("res://player.tscn")
+
+[node name="Sync" type="MultiplayerSynchronizer" parent="."]
+root_path = NodePath("..")
+replication_config = SubResource("SceneReplicationConfig_sync")
+"#;
+        let mut nodes = vec![
+            ReplicationNode {
+                kind: "MultiplayerSpawner".into(),
+                node_path: "Spawner".into(),
+                scene: "res://match.tscn".into(),
+                root_path: None,
+                spawn_path: None,
+                spawn_limit: None,
+                spawnable_scenes: Vec::new(),
+                replication_properties: Vec::new(),
+                related_nodes: Vec::new(),
+                authority_assignments: Vec::new(),
+            },
+            ReplicationNode {
+                kind: "MultiplayerSynchronizer".into(),
+                node_path: "Sync".into(),
+                scene: "res://match.tscn".into(),
+                root_path: None,
+                spawn_path: None,
+                spawn_limit: None,
+                spawnable_scenes: Vec::new(),
+                replication_properties: Vec::new(),
+                related_nodes: Vec::new(),
+                authority_assignments: Vec::new(),
+            },
+        ];
+        enrich_replication_nodes(source, &mut nodes);
+        assert_eq!(nodes[0].spawn_path.as_deref(), Some("../Players"));
+        assert_eq!(nodes[0].spawn_limit, Some(10));
+        assert_eq!(nodes[0].spawnable_scenes, ["res://player.tscn"]);
+        assert_eq!(nodes[1].root_path.as_deref(), Some(".."));
+        assert_eq!(nodes[1].replication_properties.len(), 1);
+        assert_eq!(nodes[1].replication_properties[0].path, ".:position");
+        assert_eq!(nodes[1].replication_properties[0].mode, "on_change");
     }
 }

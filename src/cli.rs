@@ -43,7 +43,32 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct NetArgs {
+    #[command(subcommand)]
+    pub command: Option<NetCommand>,
     #[arg(default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Select human or JSON result output"
+    )]
+    pub output: NetOutput,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NetCommand {
+    #[command(about = "Explain matching RPC and replication contracts")]
+    Explain(NetExplainArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct NetExplainArgs {
+    #[arg(help = "RPC method, receiver.method, scene, or replication node")]
+    pub query: String,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
     pub project: PathBuf,
     #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
     pub godot: Option<PathBuf>,
