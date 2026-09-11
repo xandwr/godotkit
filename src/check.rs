@@ -31,14 +31,17 @@ struct Counts {
 struct TemporaryScript(PathBuf);
 
 impl TemporaryScript {
-    fn create() -> io::Result<Self> {
+    fn create(contents: &[u8], extension: &str) -> io::Result<Self> {
         for attempt in 0..100 {
-            let path =
-                env::temp_dir().join(format!("gdkit-check-{}-{attempt}.gd", std::process::id()));
+            let path = env::temp_dir().join(format!(
+                "gdkit-check-{}-{attempt}.{extension}",
+                std::process::id()
+            ));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
-                    file.write_all(HARNESS.as_bytes())?;
-                    return Ok(Self(path));
+                    let temporary = Self(path);
+                    file.write_all(contents)?;
+                    return Ok(temporary);
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),
@@ -118,6 +121,21 @@ fn print_summary(failed: bool, counts: Option<&Counts>) -> io::Result<()> {
 
 pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let project = crate::engine::project_root(&args.project)?;
+    let paths =
+        crate::project_files::collect(&project, &["gd", "tscn", "scn", "tres", "res", "gdshader"])?;
+    let paths = paths
+        .iter()
+        .map(|path| {
+            Ok(format!(
+                "res://{}",
+                path.strip_prefix(&project)?
+                    .to_str()
+                    .ok_or("resource path is not valid UTF-8")?
+                    .replace('\\', "/")
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    let manifest = TemporaryScript::create(&serde_json::to_vec(&paths)?, "json")?;
     let engine = crate::engine::resolve(&project, args.godot.as_deref())?;
     let version = crate::engine::probe(&engine)?;
     eprintln!("engine: {} ({version})", engine.display());
@@ -130,11 +148,16 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
     let mut failed = !import.status.success() || has_errors(&import);
     write_diagnostics(&import)?;
 
-    let harness = TemporaryScript::create()?;
+    let harness = TemporaryScript::create(HARNESS.as_bytes(), "gd")?;
     let check = engine_output(
         &engine,
         &project,
-        &[OsStr::new("--script"), harness.0.as_os_str()],
+        &[
+            OsStr::new("--script"),
+            harness.0.as_os_str(),
+            OsStr::new("--"),
+            manifest.0.as_os_str(),
+        ],
     )?;
     let check_failed = !check.status.success() || has_errors(&check);
     write_diagnostics(&check)?;

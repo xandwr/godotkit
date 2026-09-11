@@ -41,6 +41,76 @@ fn run_scene_tree(path: &std::path::Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn project_formatting_respects_monorepo_and_nested_gitignore_rules() {
+    let repository = std::env::temp_dir().join(format!("gdkit-ignore-{}", std::process::id()));
+    let project = repository.join("game");
+    fs::create_dir_all(repository.join(".git/info")).unwrap();
+    fs::create_dir_all(project.join("nested")).unwrap();
+    fs::create_dir_all(project.join("local only")).unwrap();
+    fs::create_dir_all(project.join("engine-ignored")).unwrap();
+    fs::create_dir_all(project.join(".hidden")).unwrap();
+    fs::write(project.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(
+        repository.join(".gitignore"),
+        "/game/local only/\n*.local.gd\n/game/root.gd\n",
+    )
+    .unwrap();
+    fs::write(repository.join(".git/info/exclude"), "excluded.gd\n").unwrap();
+    fs::write(project.join(".gitignore"), "!keep.local.gd\n").unwrap();
+    fs::write(project.join("nested/.gitignore"), "*.gd\n!keep.gd\n").unwrap();
+    fs::write(project.join("engine-ignored/.gdignore"), "").unwrap();
+    let ignored = [
+        "local only/bad.gd",
+        "skip.local.gd",
+        "root.gd",
+        "excluded.gd",
+        "nested/bad.gd",
+        "engine-ignored/bad.gd",
+        ".hidden/bad.gd",
+    ];
+    for path in ignored {
+        fs::write(project.join(path), "func broken(\n").unwrap();
+    }
+    let included = ["main.gd", "keep.local.gd", "nested/keep.gd"];
+    for path in included {
+        fs::write(project.join(path), "var value=1\n").unwrap();
+    }
+    let before = run_project(&project, &["--check"]);
+    assert_eq!(
+        before.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+    let formatted = run_project(&project, &[]);
+    assert!(
+        formatted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&formatted.stderr)
+    );
+    assert!(run_project(&project, &["--check"]).status.success());
+    for path in ignored {
+        assert_eq!(
+            fs::read_to_string(project.join(path)).unwrap(),
+            "func broken(\n"
+        );
+    }
+    for path in included {
+        assert_eq!(
+            fs::read_to_string(project.join(path)).unwrap(),
+            "var value = 1\n"
+        );
+    }
+    let explicit = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .args(["format", "--check"])
+        .arg(project.join("root.gd"))
+        .output()
+        .unwrap();
+    assert_eq!(explicit.status.code(), Some(2));
+    fs::remove_dir_all(repository).unwrap();
+}
+
+#[test]
 fn stdout_and_check_have_distinct_exit_statuses() {
     let source = "func f():\n    if ready:\n        return\n";
     let output = run(&[], source);

@@ -63,6 +63,20 @@ disables color.
 
 Engine selection does not change the syntax supported by the gdview formatter.
 
+`format-project` and the resource-loading phase of `check` share Git-aware file
+discovery. Parent `.gitignore` files (including monorepo roots), nested ignore
+files, `!` exceptions, `.git/info/exclude`, and global Git ignore rules are
+respected. `.gitignore` rules also work without an initialized Git repository.
+Matching is path-based, including for tracked files; gdkit does not consult the
+Git index. Hidden paths, directories containing `.gdignore`, and symlinks are
+skipped. Ignored directories are pruned before scanning their contents.
+
+Explicit `format <file>` and `scene-tree <file>` requests still inspect the named
+file; scene expansion still follows its dependencies. Godot's own import pass
+and dependency loading do not obey Git ignore rules. An ignored resource needed
+by the project can therefore still be loaded by Godot, and engine errors still
+fail the check. Use `.gdignore` for directories Godot itself should exclude.
+
 ## Test engine
 
 Godot 4.7.2 is pinned in `godot.lock.json` only as a reproducible test dependency.
@@ -120,8 +134,8 @@ tabs count to the next multiple of 4. Guards with comments or multiline conditio
 stay unchanged. The ignored test needs Godot 4.7.2.
 
 Run `format-project` from a directory containing `project.godot` to recursively
-format every `.gd` file in that project. Symlinked files and directories are not
-followed. All scripts are validated before any files are changed. Its `--check`
+format every non-ignored `.gd` file in that project. Symlinked files and directories
+are not followed. All selected scripts are validated before any files are changed. Its `--check`
 mode exits 1 if any script would change without writing to the project.
 
 `formatter::format_source` returns `Result<String, syntax::SyntaxError>`, reporting
@@ -189,8 +203,9 @@ parser, and arena tree. Declarative macros generate token metadata, operator
 classification, typed node wrappers, and the `ast::Expression` enum. Expression
 wrapping uses forward links instead of inserting into an event vector. Tree
 traversal and destruction do not recurse through nested nodes. Project formatting
-also uses gdview to validate the current project root and enumerate scripts;
-formatting rules and file writes remain in gdkit.
+also uses gdview to validate the current project root. File discovery, formatting
+rules, and file writes remain in gdkit, with shared Git-aware traversal for the
+project commands.
 
 Coverage includes declarations, abstract signatures, typed variadic parameters,
 property accessors, nested classes, annotations, match patterns and guards,

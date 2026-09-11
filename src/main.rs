@@ -1,6 +1,7 @@
 mod check;
 mod cli;
 mod engine;
+mod project_files;
 
 use std::{
     error::Error,
@@ -85,7 +86,7 @@ fn format(args: FormatArgs) -> Result<ExitCode, Box<dyn Error>> {
 
 fn format_project(args: FormatProjectArgs) -> Result<ExitCode, Box<dyn Error>> {
     let root = std::env::current_dir()?;
-    let project = gdview::Project::open(&root).map_err(|error| -> Box<dyn Error> {
+    gdview::Project::open(&root).map_err(|error| -> Box<dyn Error> {
         match error {
             gdview::ProjectError::NotFound { .. } | gdview::ProjectError::ConfigNotAFile { .. } => {
                 format!(
@@ -102,7 +103,7 @@ fn format_project(args: FormatProjectArgs) -> Result<ExitCode, Box<dyn Error>> {
         ..Options::default()
     };
     let mut changes = Vec::new();
-    for path in project.script_files()? {
+    for path in project_files::collect(&root, &["gd"])? {
         let source =
             fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let formatted = format_source(&source, &options)

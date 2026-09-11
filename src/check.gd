@@ -12,30 +12,24 @@ const RESOURCE_KINDS := {
 
 
 func _initialize() -> void:
+	var arguments := OS.get_cmdline_user_args()
+	if arguments.size() != 1:
+		push_error("Expected a resource manifest path")
+		quit(2)
+		return
+	var paths = JSON.parse_string(FileAccess.get_file_as_string(arguments[0]))
+	if not paths is Array:
+		push_error("Invalid resource manifest")
+		quit(2)
+		return
 	var counts := { "scripts": 0, "scenes": 0, "resources": 0 }
 	var failures: Array[String] = []
-	_scan("res://", counts, failures)
-	print(RESULT_PREFIX + JSON.stringify({ "counts": counts, "failures": failures }))
-	quit(1 if not failures.is_empty() else 0)
-
-
-func _scan(path: String, counts: Dictionary, failures: Array[String]) -> void:
-	var directory := DirAccess.open(path)
-	if directory == null:
-		failures.append(path)
-		return
-	for child_directory in directory.get_directories():
-		if child_directory.begins_with("."):
-			continue
-		var child_path := path.path_join(child_directory)
-		if FileAccess.file_exists(child_path.path_join(".gdignore")):
-			continue
-		_scan(child_path, counts, failures)
-	for file in directory.get_files():
-		var kind: String = RESOURCE_KINDS.get(file.get_extension().to_lower(), "")
+	for resource_path in paths:
+		var kind: String = RESOURCE_KINDS.get(resource_path.get_extension().to_lower(), "")
 		if kind.is_empty():
 			continue
 		counts[kind] += 1
-		var resource_path := path.path_join(file)
 		if ResourceLoader.load(resource_path, "", ResourceLoader.CACHE_MODE_IGNORE) == null:
 			failures.append(resource_path)
+	print(RESULT_PREFIX + JSON.stringify({ "counts": counts, "failures": failures }))
+	quit(1 if not failures.is_empty() else 0)

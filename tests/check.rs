@@ -9,6 +9,15 @@ fn checks_project_scripts_scenes_and_resources() {
         .join(format!("gdkit-check-{}", std::process::id()));
     fs::create_dir_all(directory.parent().unwrap()).unwrap();
     fs::create_dir(&directory).unwrap();
+    fs::create_dir(directory.join(".git")).unwrap();
+    fs::create_dir(directory.join("local only")).unwrap();
+    fs::write(directory.join(".gitignore"), "/local only/\nignored.tres\n").unwrap();
+    fs::write(directory.join("local only/unused.gd"), "extends Node\n").unwrap();
+    fs::write(
+        directory.join("ignored.tres"),
+        "[gd_resource type=\"Resource\" format=3]\n[resource]\n",
+    )
+    .unwrap();
     fs::write(
         directory.join("project.godot"),
         "config_version=5\n[application]\nconfig/name=\"gdkit check test\"\n",
