@@ -6,7 +6,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Output, Stdio},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
@@ -87,6 +87,45 @@ impl TemporaryScript {
 impl Drop for TemporaryScript {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+    }
+}
+
+struct CheckArtifacts {
+    directory: PathBuf,
+}
+
+impl CheckArtifacts {
+    fn create(project: &Path) -> io::Result<Self> {
+        let root = project.join(".godot/gdkit/checks");
+        fs::create_dir_all(&root)?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        for attempt in 0..100 {
+            let directory = root.join(format!("{timestamp}-{}-{attempt}", std::process::id()));
+            match fs::create_dir(&directory) {
+                Ok(()) => return Ok(Self { directory }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not create a check artifact directory",
+        ))
+    }
+
+    fn preserve(&self, phase: &str, output: &Output) -> io::Result<()> {
+        fs::write(
+            self.directory.join(format!("{phase}.stdout.log")),
+            &output.stdout,
+        )?;
+        fs::write(
+            self.directory.join(format!("{phase}.stderr.log")),
+            &output.stderr,
+        )?;
+        Ok(())
     }
 }
 
@@ -218,8 +257,13 @@ fn filter_import_errors(output: &Output, rules: &[crate::engine::ImportError]) -
 
 #[derive(Default)]
 struct Diagnostics {
-    issues: Vec<String>,
-    cleanup: Vec<String>,
+    issues: Vec<DiagnosticMessage>,
+    cleanup: Vec<DiagnosticMessage>,
+}
+
+struct DiagnosticMessage {
+    text: String,
+    occurrence_count: usize,
 }
 
 fn diagnostics(output: &Output) -> Diagnostics {
@@ -244,8 +288,13 @@ fn diagnostics(output: &Output) -> Diagnostics {
             } else {
                 &mut result.issues
             };
-            if !target.iter().any(|existing| existing == line) {
-                target.push(line.to_owned());
+            if let Some(existing) = target.iter_mut().find(|existing| existing.text == line) {
+                existing.occurrence_count += 1;
+            } else {
+                target.push(DiagnosticMessage {
+                    text: line.to_owned(),
+                    occurrence_count: 1,
+                });
             }
         }
     }
@@ -315,9 +364,13 @@ fn write_diagnostics(
     let report = diagnostics(output);
     if !report.issues.is_empty() {
         writeln!(stderr, "\n{phase} diagnostics:")?;
-        for line in &report.issues {
-            writeln!(stderr, "  {line}")?;
-            if let Some(uid) = unresolved_uid(line) {
+        for diagnostic in &report.issues {
+            write!(stderr, "  {}", diagnostic.text)?;
+            if diagnostic.occurrence_count > 1 {
+                write!(stderr, " (repeated {} times)", diagnostic.occurrence_count)?;
+            }
+            writeln!(stderr)?;
+            if let Some(uid) = unresolved_uid(&diagnostic.text) {
                 writeln!(
                     stderr,
                     "    Godot cannot resolve this resource ID to a file."
@@ -351,8 +404,12 @@ fn write_diagnostics(
             stderr,
             "  These messages do not identify a source file; ERROR entries still fail this check."
         )?;
-        for line in &report.cleanup {
-            writeln!(stderr, "  {}", cleanup_message(line))?;
+        for diagnostic in &report.cleanup {
+            write!(stderr, "  {}", cleanup_message(&diagnostic.text))?;
+            if diagnostic.occurrence_count > 1 {
+                write!(stderr, " (repeated {} times)", diagnostic.occurrence_count)?;
+            }
+            writeln!(stderr)?;
         }
         writeln!(
             stderr,
@@ -430,6 +487,11 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
 }
 
 fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Error>> {
+    let artifacts = CheckArtifacts::create(project)?;
+    eprintln!(
+        "artifacts: {}",
+        crate::engine::display_path(&artifacts.directory)
+    );
     let scan_timer = PhaseTimer::new("file scan", args.timings);
     let scenes = args
         .scene
@@ -515,6 +577,7 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
         }
     };
     drop(import_timer);
+    artifacts.preserve("import", &import)?;
     let (filtered_import, ignored) = filter_import_errors(&import, rules);
     let mut failed = !import.status.success() || has_errors(&filtered_import);
     if ignored > 0 {
@@ -552,6 +615,7 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
         ],
     )?;
     drop(loading_timer);
+    artifacts.preserve("resource-loading", &check)?;
     let check_failed = !check.status.success() || has_errors(&check);
     write_diagnostics(&check, "Resource loading", project, &paths, args.verbose)?;
     let result = match harness_result(&check) {
@@ -570,15 +634,16 @@ fn run_project(args: CheckArgs, project: &Path) -> Result<ExitCode, Box<dyn Erro
 
     let mut smoke_count = 0;
     if !failed {
-        for scene in &scenes {
+        for (index, scene) in scenes.iter().enumerate() {
             let phase = format!("Scene smoke {}", scene.display());
             let (output, timed_out) = smoke_output(
                 &engine,
-                &project,
+                project,
                 scene,
                 args.smoke_frames,
                 args.smoke_timeout,
             )?;
+            artifacts.preserve(&format!("scene-smoke-{}", index + 1), &output)?;
             write_diagnostics(&output, &phase, project, &paths, args.verbose)?;
             if timed_out {
                 eprintln!("error: {phase} exceeded {} seconds", args.smoke_timeout);
@@ -624,7 +689,7 @@ mod tests {
                 diagnostics(&output)
                     .issues
                     .iter()
-                    .any(|line| line.contains("res://lobby.gd:4"))
+                    .any(|diagnostic| diagnostic.text.contains("res://lobby.gd:4"))
             );
         }
     }
@@ -699,20 +764,68 @@ mod tests {
         let report = diagnostics(&output);
         assert_eq!(report.cleanup.len(), 4);
         assert_eq!(
-            cleanup_message(&report.cleanup[0]),
+            cleanup_message(&report.cleanup[0].text),
             "ERROR: 12 headless renderer textures still allocated at shutdown."
         );
         assert_eq!(report.issues.len(), 4);
-        assert_eq!(unresolved_uid(&report.issues[0]), Some("uid://missing"));
-        assert!(report.issues[2].contains("res://player.gd:3"));
-        assert_eq!(report.issues[3], "ERROR: Unknown engine failure");
+        assert_eq!(
+            unresolved_uid(&report.issues[0].text),
+            Some("uid://missing")
+        );
+        assert!(report.issues[2].text.contains("res://player.gd:3"));
+        assert_eq!(report.issues[3].text, "ERROR: Unknown engine failure");
         assert!(has_errors(&output));
         let cleanup_only = Output {
             status: Default::default(),
             stdout: Vec::new(),
-            stderr: report.cleanup.join("\n").into_bytes(),
+            stderr: report
+                .cleanup
+                .iter()
+                .map(|diagnostic| diagnostic.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into_bytes(),
         };
         assert!(has_errors(&cleanup_only));
+    }
+
+    #[test]
+    fn consolidates_repeated_diagnostics_without_reordering_first_occurrences() {
+        let output = Output {
+            status: Default::default(),
+            stdout: b"WARNING: first\nERROR: second\nWARNING: first\n".to_vec(),
+            stderr: b"ERROR: second\nWARNING: third\n".to_vec(),
+        };
+        let report = diagnostics(&output);
+        assert_eq!(report.issues.len(), 3);
+        assert_eq!(report.issues[0].text, "WARNING: first");
+        assert_eq!(report.issues[0].occurrence_count, 2);
+        assert_eq!(report.issues[1].text, "ERROR: second");
+        assert_eq!(report.issues[1].occurrence_count, 2);
+        assert_eq!(report.issues[2].text, "WARNING: third");
+        assert_eq!(report.issues[2].occurrence_count, 1);
+    }
+
+    #[test]
+    fn preserves_raw_phase_streams_as_check_artifacts() {
+        let directory = env::temp_dir().join(format!("gdkit-artifacts-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let artifacts = CheckArtifacts::create(&directory).unwrap();
+        let output = Output {
+            status: Default::default(),
+            stdout: b"raw stdout\r\n".to_vec(),
+            stderr: b"raw stderr\n".to_vec(),
+        };
+        artifacts.preserve("resource-loading", &output).unwrap();
+        assert_eq!(
+            fs::read(artifacts.directory.join("resource-loading.stdout.log")).unwrap(),
+            output.stdout
+        );
+        assert_eq!(
+            fs::read(artifacts.directory.join("resource-loading.stderr.log")).unwrap(),
+            output.stderr
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

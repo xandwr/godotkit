@@ -77,7 +77,8 @@ These are existing starting points, not newly completed tasks. See the roadmap's
 
 Status: In progress | Owner: Codex | Started: 2026-09-10 | Target: - | Completed: -
 Blocker: None recorded. Evidence / commits: M01.01-M01.02 report schema and
-serialization tests in `src/report.rs`.
+serialization tests in `src/report.rs`; raw per-phase stream artifacts and
+occurrence-aware display consolidation in `src/check.rs` (partial M01.03).
 
 - [x] M01.01 Define versioned `CheckReport`: engine fingerprint, project snapshot,
   check policy, requested/completed/skipped phases, failures, artifact locations.
@@ -450,5 +451,6 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-10 | M01.03 partial | Retained byte-exact stdout/stderr for each executed engine phase and made human diagnostic consolidation report occurrence counts | `src/check.rs`; replace post-exit stream grouping with ordered shared capture before completing M01.03 |
 | 2026-09-10 | M01.01-M01.02 | Added the versioned report and diagnostic data contract with stable JSON names and round-trip coverage | `src/report.rs`; next integrate ordered capture and raw artifacts |
 | 2026-09-10 | Tracker | Established 12 planned milestones, acceptance checks, and two decision gates from the roadmap; no new delivery claimed | Begin M01 and record implementation evidence |
