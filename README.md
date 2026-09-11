@@ -312,6 +312,13 @@ dictionary or array entries, eight levels of nesting, and 16 KiB per string or
 key, inside the existing 1 MiB response limit. Contract and limit failures are
 reported as a bounded checkpoint error and exit with status 1.
 
+`gdkit inspect server --checkpoints --compare client` collects both live
+generations sequentially and compares their declared values. Results identify
+both session generations and capture ticks, include the wall-clock capture skew,
+and report recursive differences by JSON Pointer path. Matching checkpoints exit
+0; differences or collection errors exit 1. A comparison emits at most 2,048
+differences, and JSON output includes both original bounded captures.
+
 `autoloads` finds the nearest enclosing Godot project and prints its saved
 autoload initialization order with zero-based indices, names, singleton status,
 and decoded resource paths. It reads `project.godot` through gdview without

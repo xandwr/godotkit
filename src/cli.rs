@@ -260,6 +260,14 @@ pub struct InspectArgs {
     pub net: bool,
     #[arg(long, help = "Collect project-declared checkpoints")]
     pub checkpoints: bool,
+    #[arg(
+        long,
+        value_name = "SESSION",
+        requires = "checkpoints",
+        conflicts_with = "net",
+        help = "Compare checkpoints with another live session"
+    )]
+    pub compare: Option<String>,
     #[arg(long, default_value = ".", help = "Godot project directory")]
     pub project: PathBuf,
     #[arg(

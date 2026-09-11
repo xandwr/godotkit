@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     collections::hash_map::RandomState,
     error::Error,
     fs::{self, File},
@@ -18,6 +19,7 @@ use crate::cli::{InspectArgs, NetOutput};
 
 const REQUEST_SCHEMA_VERSION: u32 = 1;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+const MAX_DIFFERENCES: usize = 2048;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -112,6 +114,33 @@ struct CheckpointObservation {
 enum CheckpointStatus {
     Collected,
     Error,
+}
+
+#[derive(Serialize)]
+struct CheckpointComparison {
+    schema_version: u32,
+    left: Response,
+    right: Response,
+    capture_skew_ms: u64,
+    equal: bool,
+    differences: Vec<CheckpointDifference>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct CheckpointDifference {
+    path: String,
+    kind: DifferenceKind,
+    left: Option<Value>,
+    right: Option<Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DifferenceKind {
+    LeftOnly,
+    RightOnly,
+    Changed,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -492,26 +521,209 @@ fn request_checkpoints(
     Ok(response)
 }
 
-pub(crate) fn inspect(args: InspectArgs) -> Result<ExitCode, Box<dyn Error>> {
-    let project = crate::engine::project_root(&args.project)?;
-    let Some(record) = crate::session::select_record(&project, &args.session)? else {
-        eprintln!("error: no session matches '{}'", args.session);
-        return Ok(ExitCode::from(1));
+fn live_record(
+    project: &Path,
+    selector: &str,
+) -> Result<Option<crate::session::SessionRecord>, Box<dyn Error>> {
+    let Some(record) = crate::session::select_record(project, selector)? else {
+        eprintln!("error: no session matches '{selector}'");
+        return Ok(None);
     };
     if !crate::session::is_running(&record) {
         eprintln!(
             "error: {}@{} is not running",
             record.name, record.generation
         );
-        return Ok(ExitCode::from(1));
+        return Ok(None);
     }
-    let Some(endpoint) = &record.probe else {
+    if record.probe.is_none() {
         eprintln!(
             "error: {}@{} predates runtime probe support; restart it first",
             record.name, record.generation
         );
+        return Ok(None);
+    }
+    Ok(Some(record))
+}
+
+fn checkpoint_values(response: &Response) -> Value {
+    serde_json::to_value(
+        &response
+            .checkpoints
+            .as_ref()
+            .expect("checkpoint response")
+            .values,
+    )
+    .expect("checkpoint values serialize")
+}
+
+fn pointer_segment(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
+fn compare_values(
+    path: &str,
+    left: Option<&Value>,
+    right: Option<&Value>,
+    differences: &mut Vec<CheckpointDifference>,
+    truncated: &mut bool,
+) {
+    if differences.len() == MAX_DIFFERENCES {
+        *truncated = true;
+        return;
+    }
+    match (left, right) {
+        (Some(Value::Object(left)), Some(Value::Object(right))) => {
+            let keys = left
+                .keys()
+                .chain(right.keys())
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            for key in keys {
+                let child = format!("{path}/{}", pointer_segment(key));
+                compare_values(
+                    &child,
+                    left.get(key),
+                    right.get(key),
+                    differences,
+                    truncated,
+                );
+                if *truncated {
+                    return;
+                }
+            }
+        }
+        (Some(Value::Array(left)), Some(Value::Array(right))) => {
+            for index in 0..left.len().max(right.len()) {
+                compare_values(
+                    &format!("{path}/{index}"),
+                    left.get(index),
+                    right.get(index),
+                    differences,
+                    truncated,
+                );
+                if *truncated {
+                    return;
+                }
+            }
+        }
+        (Some(left), Some(right)) if left == right => {}
+        (Some(left), Some(right)) => differences.push(CheckpointDifference {
+            path: path.to_owned(),
+            kind: DifferenceKind::Changed,
+            left: Some(left.clone()),
+            right: Some(right.clone()),
+        }),
+        (Some(left), None) => differences.push(CheckpointDifference {
+            path: path.to_owned(),
+            kind: DifferenceKind::LeftOnly,
+            left: Some(left.clone()),
+            right: None,
+        }),
+        (None, Some(right)) => differences.push(CheckpointDifference {
+            path: path.to_owned(),
+            kind: DifferenceKind::RightOnly,
+            left: None,
+            right: Some(right.clone()),
+        }),
+        (None, None) => {}
+    }
+}
+
+fn compare_checkpoints(left: Response, right: Response) -> CheckpointComparison {
+    let left_values = checkpoint_values(&left);
+    let right_values = checkpoint_values(&right);
+    let mut differences = Vec::new();
+    let mut truncated = false;
+    compare_values(
+        "",
+        Some(&left_values),
+        Some(&right_values),
+        &mut differences,
+        &mut truncated,
+    );
+    let left_time = left
+        .checkpoints
+        .as_ref()
+        .expect("checkpoint response")
+        .collected_at_unix_ms;
+    let right_time = right
+        .checkpoints
+        .as_ref()
+        .expect("checkpoint response")
+        .collected_at_unix_ms;
+    let collected = left.checkpoints.as_ref().unwrap().status == CheckpointStatus::Collected
+        && right.checkpoints.as_ref().unwrap().status == CheckpointStatus::Collected;
+    CheckpointComparison {
+        schema_version: REQUEST_SCHEMA_VERSION,
+        capture_skew_ms: left_time.abs_diff(right_time),
+        equal: collected && differences.is_empty() && !truncated,
+        differences,
+        truncated,
+        left,
+        right,
+    }
+}
+
+fn print_comparison(comparison: &CheckpointComparison) {
+    let left = comparison.left.checkpoints.as_ref().unwrap();
+    let right = comparison.right.checkpoints.as_ref().unwrap();
+    println!(
+        "left: {}@{} tick {}/{} collected {} ms",
+        comparison.left.session,
+        comparison.left.generation,
+        left.process_tick,
+        left.physics_tick,
+        left.collected_at_unix_ms
+    );
+    println!(
+        "right: {}@{} tick {}/{} collected {} ms",
+        comparison.right.session,
+        comparison.right.generation,
+        right.process_tick,
+        right.physics_tick,
+        right.collected_at_unix_ms
+    );
+    println!("capture skew: {} ms", comparison.capture_skew_ms);
+    if left.status == CheckpointStatus::Error || right.status == CheckpointStatus::Error {
+        if let Some(error) = &left.error {
+            println!("left collection error: {error}");
+        }
+        if let Some(error) = &right.error {
+            println!("right collection error: {error}");
+        }
+        return;
+    }
+    if comparison.equal {
+        println!("checkpoints match");
+        return;
+    }
+    println!("checkpoint differences:");
+    for difference in &comparison.differences {
+        let kind = match difference.kind {
+            DifferenceKind::LeftOnly => "left only",
+            DifferenceKind::RightOnly => "right only",
+            DifferenceKind::Changed => "changed",
+        };
+        println!(
+            "  {}: {} (left={} right={})",
+            difference.path,
+            kind,
+            difference.left.as_ref().unwrap_or(&Value::Null),
+            difference.right.as_ref().unwrap_or(&Value::Null)
+        );
+    }
+    if comparison.truncated {
+        println!("comparison truncated at {MAX_DIFFERENCES} differences");
+    }
+}
+
+pub(crate) fn inspect(args: InspectArgs) -> Result<ExitCode, Box<dyn Error>> {
+    let project = crate::engine::project_root(&args.project)?;
+    let Some(record) = live_record(&project, &args.session)? else {
         return Ok(ExitCode::from(1));
     };
+    let endpoint = record.probe.as_ref().unwrap();
     let adapter = if args.checkpoints {
         crate::engine::read_config(&project)?.and_then(|config| config.inspect.checkpoint_adapter)
     } else {
@@ -520,6 +732,30 @@ pub(crate) fn inspect(args: InspectArgs) -> Result<ExitCode, Box<dyn Error>> {
     if args.checkpoints && adapter.is_none() {
         eprintln!("error: no inspect.checkpoint_adapter is configured in gdkit.toml");
         return Ok(ExitCode::from(1));
+    }
+    if let Some(other) = &args.compare {
+        let Some(other_record) = live_record(&project, other)? else {
+            return Ok(ExitCode::from(1));
+        };
+        let adapter = adapter.as_deref().unwrap();
+        let mut left = request_checkpoints(endpoint, &record.generation, adapter)?;
+        left.session = record.name;
+        let mut right = request_checkpoints(
+            other_record.probe.as_ref().unwrap(),
+            &other_record.generation,
+            adapter,
+        )?;
+        right.session = other_record.name;
+        let comparison = compare_checkpoints(left, right);
+        match args.output {
+            NetOutput::Json => println!("{}", serde_json::to_string_pretty(&comparison)?),
+            NetOutput::Human => print_comparison(&comparison),
+        }
+        return Ok(if comparison.equal {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
     }
     let mut response = if args.net {
         request_network(endpoint, &record.generation)?
@@ -658,5 +894,77 @@ fn print_human(response: &Response) {
     }
     if observation.truncated {
         println!("observation truncated to the requested response bound");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capture(session: &str, collected_at_unix_ms: u64, values: Value) -> Response {
+        Response {
+            schema_version: REQUEST_SCHEMA_VERSION,
+            request_id: session.into(),
+            session: session.into(),
+            generation: format!("{session}-generation"),
+            observation: None,
+            checkpoints: Some(CheckpointObservation {
+                adapter: "res://checkpoints.gd".into(),
+                collected_at_unix_ms,
+                process_tick: 10,
+                physics_tick: 5,
+                duration_us: 20,
+                status: CheckpointStatus::Collected,
+                error: None,
+                values: serde_json::from_value(values).unwrap(),
+                limits: CheckpointLimits {
+                    checkpoints: 32,
+                    entries: 2048,
+                    depth: 8,
+                    string_bytes: 16384,
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn compares_nested_checkpoint_values_with_json_pointers() {
+        let comparison = compare_checkpoints(
+            capture(
+                "server",
+                100,
+                serde_json::json!({
+                    "lobby/state": {"revision": 7, "participants": [1, 2]},
+                    "round~state": {"phase": "active", "winner": null}
+                }),
+            ),
+            capture(
+                "client",
+                112,
+                serde_json::json!({
+                    "lobby/state": {"revision": 8, "participants": [1, 3, 4]},
+                    "round~state": {"phase": "active"}
+                }),
+            ),
+        );
+        assert!(!comparison.equal);
+        assert_eq!(comparison.capture_skew_ms, 12);
+        assert_eq!(comparison.differences.len(), 4);
+        assert_eq!(
+            comparison.differences[0].path,
+            "/lobby~1state/participants/1"
+        );
+        assert_eq!(
+            comparison.differences[1].path,
+            "/lobby~1state/participants/2"
+        );
+        assert_eq!(comparison.differences[2].path, "/lobby~1state/revision");
+        assert_eq!(comparison.differences[3].path, "/round~0state/winner");
+        assert!(matches!(
+            comparison.differences[3].kind,
+            DifferenceKind::LeftOnly
+        ));
+        assert_eq!(comparison.differences[3].left, Some(Value::Null));
+        assert_eq!(comparison.differences[3].right, None);
     }
 }

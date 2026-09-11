@@ -51,7 +51,7 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
     .unwrap();
     fs::write(
         directory.join("checkpoints.gd"),
-        "extends RefCounted\n\nfunc collect_checkpoints(tree: SceneTree) -> Dictionary:\n\treturn {\n\t\t\"network_session\": {\"peer_id\": tree.get_multiplayer().get_unique_id()},\n\t\t\"lobby_state\": {\"revision\": 7, \"participants\": [1, 42]},\n\t\t\"round_state\": {\"phase\": \"active\"},\n\t\t\"local_player_state\": {\"alive\": true},\n\t}\n",
+        "extends RefCounted\n\nfunc collect_checkpoints(tree: SceneTree) -> Dictionary:\n\tvar revision := 8 if OS.get_cmdline_user_args().has(\"--variant\") else 7\n\treturn {\n\t\t\"network_session\": {\"peer_id\": tree.get_multiplayer().get_unique_id()},\n\t\t\"lobby_state\": {\"revision\": revision, \"participants\": [1, 42]},\n\t\t\"round_state\": {\"phase\": \"active\"},\n\t\t\"local_player_state\": {\"alive\": true},\n\t}\n",
     )
     .unwrap();
     let engine = engine.to_string_lossy();
@@ -174,6 +174,11 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
         invalid_checkpoints["checkpoints"]["error"],
         "checkpoint adapter does not exist"
     );
+    fs::write(
+        directory.join("gdkit.toml"),
+        "[engine]\nexecutable='unused'\n[inspect]\ncheckpoint_adapter='res://checkpoints.gd'\n",
+    )
+    .unwrap();
 
     let listed = run(&directory, &["sessions"]);
     assert!(listed.status.success());
@@ -192,6 +197,8 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
             "res://main.tscn",
             "--godot",
             &engine,
+            "--",
+            "--variant",
         ],
     );
     assert!(
@@ -200,6 +207,30 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
         String::from_utf8_lossy(&client.stderr)
     );
     let client_selector = selector(&client);
+    let comparison = run(
+        &directory,
+        &[
+            "inspect",
+            &first,
+            "--checkpoints",
+            "--compare",
+            &client_selector,
+            "--output",
+            "json",
+        ],
+    );
+    assert_eq!(comparison.status.code(), Some(1));
+    let comparison: serde_json::Value = serde_json::from_slice(&comparison.stdout).unwrap();
+    assert_eq!(comparison["equal"], false);
+    assert_eq!(comparison["left"]["session"], "server");
+    assert_eq!(comparison["right"]["session"], "client");
+    assert_eq!(comparison["differences"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        comparison["differences"][0]["path"],
+        "/lobby_state/revision"
+    );
+    assert_eq!(comparison["differences"][0]["left"], 7);
+    assert_eq!(comparison["differences"][0]["right"], 8);
     let concurrent = run(&directory, &["sessions"]);
     assert_eq!(
         String::from_utf8_lossy(&concurrent.stdout)
