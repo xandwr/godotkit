@@ -39,6 +39,8 @@ pub enum Command {
     Stop(SessionArgs),
     #[command(about = "Restart a named Godot session")]
     Restart(SessionArgs),
+    #[command(about = "Inspect a live named session")]
+    Inspect(InspectArgs),
 }
 
 #[derive(Debug, Args)]
@@ -247,6 +249,23 @@ pub struct SessionArgs {
     pub session: String,
     #[arg(long, default_value = ".", help = "Godot project directory")]
     pub project: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct InspectArgs {
+    #[arg(help = "Session name, or name@generation")]
+    pub session: String,
+    #[arg(long, required = true, help = "Observe live multiplayer state")]
+    pub net: bool,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Select human or JSON result output"
+    )]
+    pub output: NetOutput,
 }
 
 #[derive(Debug, Args)]

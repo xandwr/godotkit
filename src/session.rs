@@ -5,6 +5,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,10 +17,10 @@ const SESSION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SessionRecord {
+pub(crate) struct SessionRecord {
     schema_version: u32,
-    name: String,
-    generation: String,
+    pub(crate) name: String,
+    pub(crate) generation: String,
     project: PathBuf,
     engine: PathBuf,
     engine_version: String,
@@ -30,6 +31,8 @@ struct SessionRecord {
     process_started: u64,
     launched_at_unix_ms: u64,
     log: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) probe: Option<crate::runtime_probe::ProbeEndpoint>,
 }
 
 struct LaunchSpec {
@@ -92,7 +95,7 @@ impl Drop for StandardHandleInheritance {
 }
 
 #[cfg(windows)]
-fn spawn_session(command: &mut Command) -> io::Result<std::process::Child> {
+pub(crate) fn spawn_session(command: &mut Command) -> io::Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP;
     let _inheritance = StandardHandleInheritance::suppress()?;
@@ -100,7 +103,7 @@ fn spawn_session(command: &mut Command) -> io::Result<std::process::Child> {
 }
 
 #[cfg(unix)]
-fn spawn_session(command: &mut Command) -> io::Result<std::process::Child> {
+pub(crate) fn spawn_session(command: &mut Command) -> io::Result<std::process::Child> {
     command.spawn()
 }
 
@@ -168,7 +171,10 @@ fn read_records(project: &Path) -> Result<Vec<SessionRecord>, Box<dyn Error>> {
     Ok(records)
 }
 
-fn select_record(project: &Path, selector: &str) -> Result<Option<SessionRecord>, Box<dyn Error>> {
+pub(crate) fn select_record(
+    project: &Path,
+    selector: &str,
+) -> Result<Option<SessionRecord>, Box<dyn Error>> {
     let (name, generation) = selector
         .split_once('@')
         .map_or((selector, None), |(name, generation)| {
@@ -231,8 +237,16 @@ fn write_record(project: &Path, record: &SessionRecord) -> Result<(), Box<dyn Er
 fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
     validate_name(&spec.name)?;
     let scene_path = validate_scene(&spec.project, spec.scene.as_deref())?;
+    let launch_scene = scene_path
+        .as_deref()
+        .map(|path| {
+            path.strip_prefix(&spec.project)
+                .map(|path| format!("res://{}", path.to_string_lossy().replace('\\', "/")))
+        })
+        .transpose()?;
     let (version, _) = crate::engine::validated_version(&spec.engine, &spec.project)?;
     let (generation, log_path) = unique_generation(&spec.project, &spec.name)?;
+    let prepared_probe = crate::runtime_probe::prepare(&spec.project, &generation)?;
     let mut log = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -251,14 +265,29 @@ fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
     log.flush()?;
     let stdout = log.try_clone()?;
     let stderr = log.try_clone()?;
+    let mut debugger = crate::runtime_probe::start_debugger(
+        &prepared_probe,
+        &spec.engine,
+        log.try_clone()?,
+        log.try_clone()?,
+    )?;
     let mut command = Command::new(&spec.engine);
     if spec.headless {
         command.arg("--headless");
     }
     command.arg("--path").arg(&spec.project);
-    if let Some(scene) = &scene_path {
-        command.arg(scene);
-    }
+    command
+        .arg("--remote-debug")
+        .arg(format!("tcp://127.0.0.1:{}", debugger.debugger_port))
+        .arg("--script")
+        .arg(&prepared_probe.script)
+        .env("GDKIT_PROBE_GENERATION", &generation)
+        .env("GDKIT_PROBE_TOKEN", &prepared_probe.token)
+        .env("GDKIT_PROBE_READY", &prepared_probe.ready)
+        .env(
+            "GDKIT_PROBE_SCENE",
+            launch_scene.as_deref().unwrap_or_default(),
+        );
     if !spec.arguments.is_empty() {
         command.arg("--").args(&spec.arguments);
     }
@@ -266,15 +295,37 @@ fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    let mut child = spawn_session(&mut command)?;
+    let mut child = match spawn_session(&mut command) {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = debugger.child.kill();
+            let _ = debugger.child.wait();
+            return Err(error.into());
+        }
+    };
     let process_started = match process_started(child.id()) {
         Ok(started) => started,
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = debugger.child.kill();
+            let _ = debugger.child.wait();
             return Err(error.into());
         }
     };
+    let probe = match crate::runtime_probe::await_ready(&prepared_probe, &mut child, &debugger) {
+        Ok(probe) => probe,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = debugger.child.kill();
+            let _ = debugger.child.wait();
+            return Err(error);
+        }
+    };
+    thread::spawn(move || {
+        let _ = debugger.child.wait();
+    });
     let record = SessionRecord {
         schema_version: SESSION_SCHEMA_VERSION,
         name: spec.name,
@@ -289,6 +340,7 @@ fn launch(spec: LaunchSpec) -> Result<SessionRecord, Box<dyn Error>> {
         process_started,
         launched_at_unix_ms: timestamp(),
         log: log_path,
+        probe: Some(probe),
     };
     if let Err(error) = write_record(&spec.project, &record) {
         let _ = child.kill();
@@ -432,7 +484,7 @@ pub(crate) fn restart(args: SessionArgs) -> Result<ExitCode, Box<dyn Error>> {
 }
 
 #[cfg(windows)]
-fn process_started(pid: u32) -> io::Result<u64> {
+pub(crate) fn process_started(pid: u32) -> io::Result<u64> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, FILETIME},
         System::Threading::{
@@ -462,7 +514,7 @@ fn process_started(pid: u32) -> io::Result<u64> {
 }
 
 #[cfg(windows)]
-fn is_running(record: &SessionRecord) -> bool {
+pub(crate) fn is_running(record: &SessionRecord) -> bool {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, WAIT_TIMEOUT},
         System::Threading::{
@@ -488,6 +540,15 @@ fn is_running(record: &SessionRecord) -> bool {
 
 #[cfg(windows)]
 fn terminate(record: &SessionRecord) -> io::Result<bool> {
+    let terminated = terminate_process(record.pid, record.process_started)?;
+    if terminated && let Some(probe) = &record.probe {
+        let _ = crate::runtime_probe::stop(probe);
+    }
+    Ok(terminated)
+}
+
+#[cfg(windows)]
+pub(crate) fn terminate_process(pid: u32, started: u64) -> io::Result<bool> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, WAIT_TIMEOUT},
         System::Threading::{
@@ -499,13 +560,13 @@ fn terminate(record: &SessionRecord) -> io::Result<bool> {
         let handle = OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
             0,
-            record.pid,
+            pid,
         );
         if handle.is_null() {
             return Ok(false);
         }
         if WaitForSingleObject(handle, 0) != WAIT_TIMEOUT
-            || process_started(record.pid).ok() != Some(record.process_started)
+            || process_started(pid).ok() != Some(started)
         {
             CloseHandle(handle);
             return Ok(false);
@@ -521,7 +582,7 @@ fn terminate(record: &SessionRecord) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn process_started(pid: u32) -> io::Result<u64> {
+pub(crate) fn process_started(pid: u32) -> io::Result<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
     stat.rsplit_once(") ")
         .and_then(|(_, fields)| fields.split_whitespace().nth(19))
@@ -531,17 +592,26 @@ fn process_started(pid: u32) -> io::Result<u64> {
 }
 
 #[cfg(unix)]
-fn is_running(record: &SessionRecord) -> bool {
+pub(crate) fn is_running(record: &SessionRecord) -> bool {
     process_started(record.pid).ok() == Some(record.process_started)
 }
 
 #[cfg(unix)]
 fn terminate(record: &SessionRecord) -> io::Result<bool> {
-    if !is_running(record) {
+    let terminated = terminate_process(record.pid, record.process_started)?;
+    if terminated && let Some(probe) = &record.probe {
+        let _ = crate::runtime_probe::stop(probe);
+    }
+    Ok(terminated)
+}
+
+#[cfg(unix)]
+pub(crate) fn terminate_process(pid: u32, started: u64) -> io::Result<bool> {
+    if process_started(pid).ok() != Some(started) {
         return Ok(false);
     }
     Ok(Command::new("kill")
-        .args(["-TERM", &record.pid.to_string()])
+        .args(["-TERM", &pid.to_string()])
         .status()?
         .success())
 }
@@ -573,6 +643,7 @@ mod tests {
             process_started: 1,
             launched_at_unix_ms,
             log: root(&project).join(format!("logs/{generation}.log")),
+            probe: None,
         };
         write_record(&project, &record("first", 1)).unwrap();
         write_record(&project, &record("second", 2)).unwrap();

@@ -190,13 +190,15 @@ creation identity. Renderer and source fingerprint recording remain.
 [Roadmap section 4](poweruser-roadmap.md#4-named-runtime-sessions).
 
 Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
-Blocker: None recorded. Evidence / commits: The API command now indexes named
-project script classes, declarations, script inheritance, native base fallback,
-and source locations with gdview. Scene/resource nodes and reference edges remain.
+Blocker: None recorded. Evidence / commits: `inspect <session> --net` now takes
+fresh generation-scoped, bounded observations through a typed loopback request.
+It reports live peer/root configuration, authority, replication nodes, connection
+events, and RPC traffic captured from the engine's built-in multiplayer profiler
+through a constrained loopback debugger relay.
 
 - [ ] M06.01 Spike read-only `inspect`: live tree, selected properties, autoload state,
   script errors, and source locations.
-- [ ] M06.02 Include session/generation and collection time or frame/tick in observations;
+- [x] M06.02 Include session/generation and collection time or frame/tick in observations;
   invalidate node IDs on restart and distinguish cached state from fresh samples.
 - [ ] M06.03 Negotiate LSP/DAP capabilities; evaluate definitions, references, rename
   candidates, and debugger interactions without duplicating language semantics.
@@ -204,7 +206,7 @@ and source locations with gdview. Scene/resource nodes and reference edges remai
   startup errors; record unsupported startup ordering explicitly.
 - [ ] M06.05 Evaluate public `EditorDebuggerPlugin`/`EngineDebugger` probe versus
   versioned native debugger access and document plugin/autoload setup effects.
-- [ ] M06.06 Define typed requests with IDs, generations, deadlines, and response bounds;
+- [x] M06.06 Define typed requests with IDs, generations, deadlines, and response bounds;
   observation is the default, with mutation a separately identified capability.
 - [ ] M06.07 Specify session-matched mutations returning resulting state, runtime-only
   tuning versus authored saves, and editor undo for authored changes.
@@ -469,6 +471,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 
 | Date | Items | Change | Evidence / next step |
 | --- | --- | --- | --- |
+| 2026-09-11 | M06.02, M06.06 | Added `gdkit inspect <session> --net` with fresh generation-scoped multiplayer roots, peers, authority, replication state, connection events, and built-in RPC profiler traffic over bounded typed loopback requests | `src/runtime_probe.rs`, `src/runtime_probe.gd`, `src/debugger_bridge.gd`, `tests/sessions.rs`; validated startup, human/JSON observations, connection and RPC events, stale generations, restart, concurrent sessions, and cleanup on custom Godot 4.7.3 |
 | 2026-09-11 | M07.01 partial | Added `gdkit net explain` with source-backed RPC call-to-endpoint contracts, multiplayer subtree and stable-path requirements, recipients and sender identity, plus spawner/synchronizer properties and authority relationships | `src/net.rs`, `src/net_report.rs`, `tests/net.rs`; validate against Pill Poppers `_request_start_match` and custom Godot 4.7.3 |
 | 2026-09-11 | M07.01 partial | Added `gdkit net` with configured-engine RPC metadata and gdview-backed RPC calls, peer construction/assignment, lifecycle, authority, autoload, and text-scene replication topology in human and JSON reports | `src/net.rs`, `src/net.gd`, `src/net_report.rs`, `tests/net.rs`; validated against Pill Poppers on custom Godot 4.7.3; next add arbitrary replication properties through the shared project graph |
 | 2026-09-11 | M05.01-M05.05 partial | Added durable named run sessions with exact generation selectors, combined logs, live status, identity-checked stop, and restart; windowed runs are default and headless is explicit | `src/session.rs`, `tests/sessions.rs`; validated launch, concurrent sessions, duplicate rejection, logs, status, stop, stale stop, restart, and history on custom Godot 4.7.3; next add source/renderer identity and shared supervisor integration |

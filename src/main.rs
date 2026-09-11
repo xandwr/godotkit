@@ -7,6 +7,7 @@ mod import_worker;
 mod net;
 mod process;
 mod project_files;
+mod runtime_probe;
 mod session;
 
 use std::{
@@ -185,6 +186,7 @@ fn main() -> ExitCode {
         Command::Logs(args) => session::logs(args),
         Command::Stop(args) => session::stop(args),
         Command::Restart(args) => session::restart(args),
+        Command::Inspect(args) => runtime_probe::inspect(args),
     };
     match result {
         Ok(code) => code,

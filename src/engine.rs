@@ -161,6 +161,8 @@ pub(crate) fn probe_key(engine: &Path) -> std::io::Result<ProbeKey> {
     include_str!("engine.rs").hash(&mut implementation);
     include_str!("probe.gd").hash(&mut implementation);
     include_str!("check.gd").hash(&mut implementation);
+    include_str!("runtime_probe.gd").hash(&mut implementation);
+    include_str!("debugger_bridge.gd").hash(&mut implementation);
     Ok(ProbeKey {
         files,
         implementation: implementation.finish(),

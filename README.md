@@ -267,6 +267,24 @@ and `gdkit restart <session>` launches the recorded engine, scene, arguments,
 and mode as a new generation. These commands only operate on records belonging
 to the selected project.
 
+`gdkit inspect server --net` takes a fresh, read-only multiplayer observation
+from a live named session. An exact generation selector such as `server@abc`
+is also accepted, and `--output json` emits the typed response. Each sample
+identifies the immutable session generation, wall-clock collection time,
+process and physics ticks, concrete peer and connection state, SceneMultiplayer
+roots and settings, node authority, live spawners and synchronizers, and the
+recent connection and RPC event ring. RPC counts and byte totals come from the
+engine's built-in multiplayer profiler through a loopback debugger relay. The
+loopback probe accepts only the versioned network-observation request, checks
+its generation, token, deadline,
+and response bound, and does not expose expression evaluation or mutation.
+
+Named runs use a generated `SceneTree` launch wrapper under
+`.godot/gdkit/sessions/probe` so observation begins before the main scene loads.
+The wrapper preserves project arguments and loads the selected or configured
+main scene after its loopback endpoint is ready. Sessions created by an older
+gdkit build must be restarted before they can be inspected.
+
 `autoloads` finds the nearest enclosing Godot project and prints its saved
 autoload initialization order with zero-based indices, names, singleton status,
 and decoded resource paths. It reads `project.godot` through gdview without

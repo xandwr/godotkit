@@ -41,7 +41,7 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
     .unwrap();
     fs::write(
         directory.join("main.gd"),
-        "extends Node\n\nfunc _ready() -> void:\n\tprint(\"named session ready\")\n",
+        "extends Node\n\nfunc _ready() -> void:\n\tprint(\"named session ready\")\n\tawait get_tree().process_frame\n\tawait get_tree().process_frame\n\tmultiplayer.peer_connected.emit(42)\n\tEngineDebugger.profiler_add_frame_data(&\"multiplayer:rpc\", [\"rpc_out\", get_instance_id(), 12])\n",
     )
     .unwrap();
     let engine = engine.to_string_lossy();
@@ -67,6 +67,44 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
         assert!(Instant::now() < deadline, "session did not become ready");
         thread::sleep(Duration::from_millis(50));
     }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let inspected = loop {
+        let inspected = run(&directory, &["inspect", &first, "--net"]);
+        assert!(
+            inspected.status.success(),
+            "{}",
+            String::from_utf8_lossy(&inspected.stderr)
+        );
+        let text = String::from_utf8(inspected.stdout).unwrap();
+        if text.contains("peer_connected") && text.contains(" rpc ") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "probe events were not captured");
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert!(inspected.contains(&format!("session: {first}")));
+    assert!(inspected.contains("OfflineMultiplayerPeer"));
+    assert!(inspected.contains("node authorities:"));
+    assert!(inspected.contains("recent events:"));
+
+    let inspected_json = run(
+        &directory,
+        &["inspect", "server", "--net", "--output", "json"],
+    );
+    assert!(inspected_json.status.success());
+    let inspected_json: serde_json::Value = serde_json::from_slice(&inspected_json.stdout).unwrap();
+    assert_eq!(inspected_json["session"], "server");
+    assert_eq!(
+        inspected_json["generation"],
+        first.split_once('@').unwrap().1
+    );
+    assert!(
+        inspected_json["observation"]["process_tick"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
 
     let listed = run(&directory, &["sessions"]);
     assert!(listed.status.success());
@@ -126,6 +164,10 @@ fn launches_lists_logs_stops_and_restarts_named_sessions() {
     );
     let stale = run(&directory, &["stop", &first]);
     assert_eq!(stale.status.code(), Some(1));
+    assert_eq!(
+        run(&directory, &["inspect", &first, "--net"]).status.code(),
+        Some(1)
+    );
 
     let restarted = run(&directory, &["restart", &first]);
     assert!(
