@@ -19,9 +19,9 @@ not a claim that competing tools cannot do these things.
 
 The repository already has useful architectural choices: a Rust CLI, a reusable
 gdview syntax/scene frontend, explicit per-project engine selection, cached engine
-compatibility probes, Git-aware file discovery, and a persistent import editor.
-Resource validation still uses a fresh process, avoiding persistent script-cache
-state as the authority for a successful check. These findings come from the
+compatibility probes, Git-aware file discovery, and cacheless disposable editor
+imports. Resource validation also uses a fresh process, so persistent script-cache
+state is never the authority for a successful check. These findings come from the
 repository sources listed under Local evidence.
 
 The September 10 validation changes add `check --strict-methods`, the equivalent
@@ -121,8 +121,8 @@ human and JSON output. Suppressed diagnostics should be accounted for explicitly
 Move process launching out of individual commands. The supervisor should own
 launch arguments, process identity, output spooling, deadlines, cancellation,
 termination, exit status, and artifact retention. Apply it to compatibility
-probes, fresh imports, resource checking, smoke checks, exports, and test adapters.
-The import worker retains its protocol but shares lifecycle primitives.
+probes, disposable editor imports, resource checking, smoke checks, exports, and
+test adapters.
 
 On Windows, investigate Job Objects with kill-on-close and assignment before the
 engine can create descendants. On Unix, investigate process groups and group

@@ -65,7 +65,7 @@ pub enum CacheCommand {
     Clean(CacheCleanArgs),
     #[command(about = "Show cache presence and size without starting Godot")]
     Status(CacheStatusArgs),
-    #[command(about = "Stop this project's background import editor")]
+    #[command(about = "Stop a background import editor left by an older gdkit")]
     Stop(CacheStopArgs),
 }
 
@@ -226,19 +226,21 @@ pub struct CheckArgs {
     pub timings: bool,
     #[arg(
         long,
-        help = "Use fresh Godot processes, including a full editor import"
+        hide = true,
+        help = "Compatibility option; checks already use fresh Godot processes"
     )]
     pub fresh: bool,
     #[arg(
         long,
-        help = "Copy the project to a temporary directory and perform a fresh check there"
+        hide = true,
+        help = "Compatibility option; checks already use a temporary project copy"
     )]
     pub isolated: bool,
     #[arg(
         long,
         conflicts_with = "fresh",
         conflicts_with_all = ["scene", "script", "strict_methods", "smoke_frames", "smoke_timeout", "script_timeout", "isolated", "output"],
-        help = "Stop the import editor (prefer gdkit cache stop)"
+        help = "Stop a legacy import editor (prefer gdkit cache stop)"
     )]
     pub stop_worker: bool,
 }

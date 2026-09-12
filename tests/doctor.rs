@@ -35,7 +35,7 @@ fn reports_engine_cache_policy_and_project_gotchas() {
         first.contains("probe cache: healthy (created; was missing)"),
         "{first}"
     );
-    assert!(first.contains("worker: stopped"), "{first}");
+    assert!(first.contains("legacy worker: stopped"), "{first}");
     assert!(first.contains("GDScript warnings: false"), "{first}");
     assert!(first.contains("strict methods: enabled"), "{first}");
     assert!(first.contains("suppresses 1 exact import error"), "{first}");

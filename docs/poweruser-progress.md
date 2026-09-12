@@ -64,7 +64,7 @@ These are existing starting points, not newly completed tasks. See the roadmap's
 | --- | --- |
 | Rust CLI and reusable gdview frontend | Keep syntax/scene structure separate from Godot semantics |
 | Explicit project engine selection and cached probes | Identify the actual selected executable and cache validity |
-| Git-aware discovery and persistent import editor | Fresh resource validation remains authoritative |
+| Git-aware discovery and disposable editor import | Checks never trust source `.godot` state |
 | `check --strict-methods` and config equivalent | Install policy before autoloads; preserve suppression/exclusions; do not edit project settings |
 | Bounded scene startup and zero-exit error detection | Startup coverage is limited; ordinary checks retain project warning policy |
 | Existing strict/runtime fixtures | Roadmap reports official/custom engine validation on Windows only |
@@ -111,8 +111,8 @@ termination in `src/process.rs`; direct check processes migrated (partial M02.01
 
 - [ ] M02.01 Centralize arguments, process identity, output spooling, deadlines,
   cancellation, termination, exit status, and artifact retention.
-- [ ] M02.02 Migrate probes, fresh imports, resource checks, and smoke runs; share
-  lifecycle primitives with the import worker while preserving its protocol.
+- [ ] M02.02 Migrate probes, disposable editor imports, resource checks, and smoke
+  runs to the shared lifecycle primitives.
 - [ ] M02.03 Define supervisor integration for future exports/test adapters;
   actual adapter adoption is verified in M12.
 - [ ] M02.04 Investigate and record Windows Job Object assignment before descendant
@@ -249,8 +249,8 @@ compatible endpoints and stable peer paths. General reference edges remain.
 Status: In progress | Owner: Codex | Started: 2026-09-11 | Target: - | Completed: -
 Blocker: None recorded. Evidence / commits: Project-owned `SceneTree` scripts now
 run through `gdkit check --script` with deadlines, diagnostics, and durable phase
-artifacts. `--isolated` provides a fresh temporary project without changing the
-source project's imported state. Named scenarios persist startup state, the first
+artifacts. Every check uses a fresh temporary project without changing the source
+project's imported state. Named scenarios persist startup state, the first
 failure, resolved ports, participant sessions, and readiness through cleanup.
 
 - [ ] M08.01 Define opt-in named scenarios using project-owned fixture scenes and
@@ -483,6 +483,7 @@ the selected option, reason, evidence, and resulting scope or dependency changes
 | 2026-09-11 | M07.01 partial | Added `gdkit net` with configured-engine RPC metadata and gdview-backed RPC calls, peer construction/assignment, lifecycle, authority, autoload, and text-scene replication topology in human and JSON reports | `src/net.rs`, `src/net.gd`, `src/net_report.rs`, `tests/net.rs`; validated against Pill Poppers on custom Godot 4.7.3; next add arbitrary replication properties through the shared project graph |
 | 2026-09-11 | M05.01-M05.05 partial | Added durable named run sessions with exact generation selectors, combined logs, live status, identity-checked stop, and restart; windowed runs are default and headless is explicit | `src/session.rs`, `tests/sessions.rs`; validated launch, concurrent sessions, duplicate rejection, logs, status, stop, stale stop, restart, and history on custom Godot 4.7.3; next add source/renderer identity and shared supervisor integration |
 | 2026-09-11 | M07.01 partial | Added source-backed named GDScript classes and members to API lookup and search, including project inheritance and native base fallback | `src/api.rs`, `tests/api.rs`; validated with Pill Poppers domain classes on custom Godot 4.7.3; next build reference edges and resource nodes |
+| 2026-09-11 | M01.07 partial | Made every check run a complete editor import and GDScript scan in a disposable cacheless project copy, preserving source caches and collecting import diagnostics | `src/check.rs`, `tests/check.rs`; next validate against configured Godot engines |
 | 2026-09-11 | M08.02-M08.03 partial | Added bounded project-owned script checks and isolated fresh-project execution through the common report and artifact pipeline | `src/check.rs`, `src/report.rs`, `tests/check.rs`; validated against Pill Poppers infrastructure contract on custom Godot 4.7.3; next define named scenario protocol |
 | 2026-09-10 | M01.03-M01.07 partial | Added final JSON check reports and persisted report artifacts with populated diagnostics, phase coverage, fingerprints, suppression counts, and exit-code outcomes | `src/check.rs`, `src/report.rs`, `tests/check.rs`; unit and local Godot validation; next migrate worker capture and add live stdout events |
 | 2026-09-10 | M01.03, M02.01-M02.02 partial | Added shared live stdout/stderr capture with observed ordering, timestamps, process identity, exact stream reconstruction, and deadlines; migrated fresh import, resource loading, and smoke processes | `src/process.rs`, `src/check.rs`; populate reports from captured events and migrate probe/worker lifecycle paths |

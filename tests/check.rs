@@ -23,6 +23,12 @@ fn checks_project_scripts_scenes_and_resources() {
         "config_version=5\n[application]\nconfig/name=\"gdkit check test\"\n",
     )
     .unwrap();
+    fs::create_dir_all(directory.join(".godot/editor")).unwrap();
+    fs::write(
+        directory.join(".godot/editor/filesystem_cache10"),
+        "source cache sentinel",
+    )
+    .unwrap();
 
     let initialized = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .current_dir(&directory)
@@ -123,6 +129,7 @@ fn checks_project_scripts_scenes_and_resources() {
     assert_eq!(report.schema_version, 2);
     assert_eq!(report.completed_phases, report.requested_phases);
     assert_eq!(report.checked.as_ref().unwrap().scripts, 1);
+    assert!(report.policy.fresh_import);
     assert!(report.project.fingerprint.len() == 64);
     assert!(report.engine.as_ref().unwrap().fingerprint.len() == 64);
     assert!(report.diagnostics.is_empty());
@@ -131,6 +138,10 @@ fn checks_project_scripts_scenes_and_resources() {
         artifact.kind == gdkit::report::ArtifactKind::Report && artifact.path.is_file()
     }));
     assert!(!String::from_utf8_lossy(&json.stderr).contains("check passed"));
+    assert_eq!(
+        fs::read_to_string(directory.join(".godot/editor/filesystem_cache10")).unwrap(),
+        "source cache sentinel"
+    );
     fs::write(
         directory.join("contract.gd"),
         "extends SceneTree\n\nfunc _initialize() -> void:\n\tprint(\"contract passed\")\n\tquit(0)\n",
@@ -309,6 +320,22 @@ fn checks_project_scripts_scenes_and_resources() {
         "\x1b[0m\nruntime execution: none requested\nvalidation policy: project warning policy\n"
     ));
     assert!(String::from_utf8_lossy(&invalid_script.stderr).contains("broken.gd"));
+    let invalid_json = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env_remove("GDKIT_GODOT")
+        .args(["check", directory.to_str().unwrap(), "--output", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid_json.status.code(), Some(1));
+    let invalid_report: gdkit::report::CheckReport =
+        serde_json::from_slice(&invalid_json.stdout).unwrap();
+    assert!(invalid_report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.phase.kind == gdkit::report::CheckPhase::Import
+            && diagnostic.resource.as_deref() == Some("res://broken.gd")
+    }));
+    assert_eq!(
+        fs::read_to_string(directory.join(".godot/editor/filesystem_cache10")).unwrap(),
+        "source cache sentinel"
+    );
     fs::write(
         directory.join("broken.gd"),
         "extends Node\n\nvar missing = preload(\"uid://daaaaaaaaaaaa\")\n",

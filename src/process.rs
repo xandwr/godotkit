@@ -29,6 +29,7 @@ pub(crate) struct CapturedOutput {
 }
 
 impl CapturedOutput {
+    #[cfg(test)]
     pub(crate) fn from_output(output: Output) -> Self {
         let mut lines = Vec::new();
         collect_existing_lines(&mut lines, OutputStream::Stdout, &output.stdout);
@@ -78,6 +79,7 @@ fn timestamp() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+#[cfg(test)]
 fn collect_existing_lines(lines: &mut Vec<OutputLine>, stream: OutputStream, bytes: &[u8]) {
     let mut reader = BufReader::new(bytes);
     loop {

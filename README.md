@@ -18,7 +18,7 @@ cargo run -- init --godot /path/to/godot
 cargo run -- api CharacterBody3D move_and_slide
 cargo run -- api search multiplayer
 cargo run -- check /path/to/project
-cargo run -- check /path/to/project --isolated --script res://tests/contract.gd
+cargo run -- check /path/to/project --script res://tests/contract.gd
 cargo run -- run --name server --headless -- --server
 cargo run -- sessions
 cargo run -- logs server
@@ -68,8 +68,8 @@ missing, unreadable, or malformed caches trigger a fresh probe. Cache write
 failures do not prevent checking. Delete the cache file to force a fresh probe.
 
 Run `gdkit doctor [project]` to explain the resolved project and engine, exact
-engine version, selection source, compatibility-probe cache health, import-worker
-state, effective check warning policy, and likely project-specific gotchas. Like
+engine version, selection source, compatibility-probe cache health, legacy
+import-worker cleanup state, effective check warning policy, and likely project-specific gotchas. Like
 `check`, it accepts `--godot`; otherwise the normal selection precedence applies.
 
 `gdkit api <class> [member]` reflects the configured engine's native `ClassDB`.
@@ -130,7 +130,7 @@ runtime-created nodes remain outside static inspection. Engine selection follows
 the same precedence as `api` and `check`.
 
 Run `gdkit cache refresh [PROJECT]` (or `gdkit import [PROJECT]`) after adding,
-moving, or deleting files outside Godot. It stops gdkit's background importer,
+moving, or deleting files outside Godot. It stops any legacy gdkit background importer,
 runs a headless editor import to completion, and persists Godot's UID,
 script-class, and import caches without the resource-validation pass of `check`.
 Engine selection follows `check`, including `--godot`. Move a script's `.uid`
@@ -151,15 +151,15 @@ Both operations preserve source `.uid` and `.import` sidecars, editor layouts,
 and `.godot/gdkit` records, logs, and API/engine-probe caches. Every removed target
 is printed. Deleted derived caches can be regenerated with `gdkit cache refresh`.
 Close external editors before rebuilding or cleaning. Running gdkit sessions
-block these operations; gdkit's import worker is stopped automatically.
+block these operations; a legacy gdkit import worker is stopped automatically.
 Cache mutations and checks share a project lock outside `.godot`. Cleanup
 rejects cache symlinks and Windows reparse points instead of following them.
-`check --fresh` still means fresh processes; it does not delete existing caches.
+`check` does not use or delete the source project's derived caches.
 
 `gdkit cache status [PROJECT]` reports cache presence and sizes without starting
 Godot or requiring an engine configuration. Add `--output json` for a versioned
-machine-readable inventory. Presence does not prove freshness or worker liveness.
-`gdkit cache stop [PROJECT]` stops only gdkit's background import editor;
+machine-readable inventory. Presence does not prove freshness.
+`gdkit cache stop [PROJECT]` stops a background import editor left by an older gdkit;
 `gdkit check --stop-worker` remains supported for compatibility.
 
 Typical workflow after moving files:
@@ -173,12 +173,20 @@ For a stale UID index, use `gdkit cache rebuild game`. Reserve `cache clean` for
 discarding imported assets and shader caches as well. Rebuild preserves existing
 resource identities; it does not assign fresh UIDs to every resource.
 
-`check` runs the selected editor headlessly, imports the project, and loads every
-GDScript, scene, resource, and Godot shader outside ignored and hidden directories.
-Importing can update the project's Godot caches. It exits 1 when Godot reports an
-error or a resource fails to load, and exits 2 for tooling failures such as a
-missing project, invalid configuration, or incompatible engine. This checks
-resource loading, not gameplay execution or a complete C# build.
+`check` copies the project to a disposable directory without `.godot` or `.git`,
+runs the selected editor's complete import and filesystem scan against that clean
+copy, collects its GDScript diagnostics, and then loads every GDScript, scene,
+resource, and Godot shader outside ignored and hidden directories. Reports and
+artifacts remain associated with the source project, whose Godot caches are not
+read or changed. It exits 1 when Godot reports an error or a resource fails to
+load, and exits 2 for tooling failures such as a missing project, invalid
+configuration, or incompatible engine. This checks resource loading, not gameplay
+execution or a complete C# build.
+
+Editor shutdown allocation messages from the disposable scan are retained in the
+raw import artifacts but are not treated as project diagnostics. The scan records
+an explicit completion boundary; GDScript, addon, and import errors emitted before
+it remain validation failures, while later editor teardown output does not.
 
 After import, `check` compares project-owned `class_name` declarations with
 Godot's global script-class cache. A missing class, a class mapped to the wrong
@@ -205,7 +213,7 @@ strict_methods = true
 
 This enables Godot's `unsafe_method_access` diagnostic as an error in the fresh
 resource-checking process, before autoloads and their dependencies load. It does
-not edit `project.godot` or change the import worker's warning policy. Project
+not edit `project.godot` or change the editor import's warning policy. Project
 warning directory exclusions and explicit `@warning_ignore("unsafe_method_access")`
 annotations still apply. Put a targeted annotation immediately before the call.
 Other warning severities retain the project's policy, although the warning system
@@ -246,42 +254,19 @@ exit status. `--script-timeout 30` controls the per-script deadline. Failures,
 timeouts, engine diagnostics, and original output use the same report and
 artifact contract as the rest of the check.
 
-Use `gdkit check --isolated` to copy the project, excluding `.godot` and `.git`,
-to a temporary directory and perform a fresh check there. Engine selection,
-configuration, reports, and retained artifacts remain associated with the source
-project. The temporary copy is removed after all processes finish. Symbolic links
-are rejected rather than followed across the isolated boundary.
-
-By default, the import editor stays alive for five minutes after its last request.
-Subsequent checks ask it to scan again and update changed script classes, avoiding
-editor startup after ordinary script edits. Every check still loads all selected
-resources in a **fresh process**, sharing dependencies within that single pass;
+The disposable copy is removed after every check. Symbolic links are rejected
+rather than followed across the copy boundary. All selected resources load in a
+fresh process after the editor scan, sharing dependencies within that single pass;
 script files load before scenes and resources to support cyclic preloads. There
-is no cached pass result or persistent GDScript analyzer in the resource checker.
+is no cached pass result or persistent GDScript analyzer.
 
-The worker restarts when the engine, worker implementation, non-script files,
-addon scripts, or `@tool` scripts change. Changes after an import error also
-restart it so errors from editor startup can be reevaluated. Unchanged import
-errors remain visible and continue to fail checks. New assets, settings changes,
-and cold startup can therefore still take seconds. Script contents are hashed
-to detect edits even when modification timestamps are unchanged.
-
-Use `gdkit check --fresh` for a complete import and resource check with new
-processes, including import-editor shutdown diagnostics. This also stops any
-existing worker. `gdkit check --stop-worker` stops the project's worker without
-checking, releasing its memory and file handles immediately. Worker state and
-logs live under `.godot/gdkit`; its authenticated socket listens only on localhost.
-Concurrent import requests are serialized with a project lock. Unsupported
-worker APIs or project symlinks fall back to fresh importing.
+`gdkit check --fresh` and `gdkit check --isolated` remain accepted as hidden
+compatibility options, but no longer change behavior. `gdkit check --stop-worker`
+and `gdkit cache stop` can release an import editor left by an older gdkit version.
 
 Use `gdkit check --timings` to print file scan, engine validation (cached or
-probed), import (worker startup or warm worker), resource loading, and total
-elapsed times to stderr. Project import and resource loading still run on every
-check. On a local Pill Poppers copy with 45 scripts, 8 scenes, and 29 resources,
-warm checks measured roughly 490 ms wall time; this is a sample, not a guarantee
-for every project or cold/import-changing check. Successful ordinary script-edit
-checks measured 489-499 ms with the existing broken Steam editor plugin disabled
-only in the benchmark copy; all 82 selected files were still checked.
+probed), clean editor import, resource loading, and total elapsed times to stderr.
+Project import and resource loading run on every check.
 
 The final summary explicitly says `check passed` or `check failed`, colored green
 or red in a terminal, and labels the scripts, scenes, and resources as loaded by

@@ -71,8 +71,7 @@ pub(crate) fn run(args: DoctorArgs) -> Result<ExitCode, Box<dyn Error>> {
         .and_then(|config| config.inspect.checkpoint_adapter.as_deref());
     let prior_cache = crate::engine::probe_cache_health(&engine, &project);
     let (version, cached) = crate::engine::validated_version(&engine, &project)?;
-    let worker = crate::import_worker::inspect(&project, &engine);
-    let worker_issue = crate::import_worker::compatibility_issue(&project, &engine);
+    let worker = crate::import_worker::inspect(&project);
 
     println!("project: {}", crate::engine::display_path(&project));
     println!("engine: {}", crate::engine::display_path(&engine));
@@ -95,18 +94,10 @@ pub(crate) fn run(args: DoctorArgs) -> Result<ExitCode, Box<dyn Error>> {
         }
     );
     println!(
-        "worker: {}",
+        "legacy worker: {}",
         match worker.state {
             WorkerState::None => "stopped (no saved worker)".into(),
-            WorkerState::Running => format!(
-                "running (pid {}; {})",
-                worker.pid.unwrap_or_default(),
-                match worker.current {
-                    Some(true) => "inputs current",
-                    Some(false) => "restart required by project or engine changes",
-                    None => "input freshness unavailable",
-                }
-            ),
+            WorkerState::Running => format!("running (pid {})", worker.pid.unwrap_or_default()),
             WorkerState::Stale => format!(
                 "stale record (pid {} is not running)",
                 worker.pid.unwrap_or_default()
@@ -131,18 +122,14 @@ pub(crate) fn run(args: DoctorArgs) -> Result<ExitCode, Box<dyn Error>> {
             "gdkit.toml is invalid; the engine still came from {selected_by}, but gdkit check will fail until this is fixed: {issue}"
         ));
     }
-    if let Some(issue) = worker_issue {
-        gotchas.push(format!("persistent import unavailable: {issue}"));
-    }
-    if worker.current == Some(false) {
-        gotchas.push("the import worker will restart on the next check".into());
-    }
     if worker.state == WorkerState::Stale {
-        gotchas.push("the saved worker record is stale; the next check will replace it".into());
+        gotchas.push(
+            "the saved legacy worker record is stale; run gdkit cache stop to remove it".into(),
+        );
     }
     if !worker.diagnostics.is_empty() {
         gotchas.push(format!(
-            "the worker has {} cached import error line{}; run gdkit check for current diagnostics",
+            "the legacy worker has {} cached import error line{}; run gdkit cache stop to remove it",
             worker.diagnostics.len(),
             if worker.diagnostics.len() == 1 {
                 ""
@@ -156,9 +143,6 @@ pub(crate) fn run(args: DoctorArgs) -> Result<ExitCode, Box<dyn Error>> {
             "gdkit.toml suppresses {ignored_import_errors} exact import error{}",
             if ignored_import_errors == 1 { "" } else { "s" }
         ));
-    }
-    if !project.join(".godot").is_dir() {
-        gotchas.push(".godot is missing; the next check must perform an initial import".into());
     }
     println!("gotchas:");
     if gotchas.is_empty() {

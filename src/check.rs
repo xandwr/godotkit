@@ -22,6 +22,8 @@ use crate::cli::{CheckArgs, CheckOutput};
 use crate::process::{CapturedOutput, OutputStream};
 
 const HARNESS: &str = include_str!("check.gd");
+const IMPORT_SCAN: &str = include_str!("import_scan.gd");
+const IMPORT_SCAN_RESULT: &str = "GDKIT_IMPORT_SCAN_COMPLETE";
 const RESULT_PREFIX: &str = "GDKIT_CHECK_RESULT:";
 
 struct PhaseTimer {
@@ -700,12 +702,7 @@ fn diagnostics(output: &CapturedOutput) -> Diagnostics {
         if line.starts_with("at:") && !line.contains("res://") {
             continue;
         }
-        let cleanup = (line.contains("RID allocations of type")
-            && line.ends_with("were leaked at exit."))
-            || (line.contains("RIDs of type") && line.ends_with("were leaked."))
-            || (line.starts_with("WARNING: ObjectDB instances leaked at exit"))
-            || (line.contains("ObjectDB instances were leaked at exit"))
-            || (line.starts_with("ERROR:") && line.contains("resources still in use at exit"));
+        let cleanup = is_cleanup_diagnostic(line);
         let target = if cleanup {
             &mut result.cleanup
         } else {
@@ -721,6 +718,14 @@ fn diagnostics(output: &CapturedOutput) -> Diagnostics {
         }
     }
     result
+}
+
+fn is_cleanup_diagnostic(line: &str) -> bool {
+    (line.contains("RID allocations of type") && line.ends_with("were leaked at exit."))
+        || (line.contains("RIDs of type") && line.ends_with("were leaked."))
+        || line.starts_with("WARNING: ObjectDB instances leaked at exit")
+        || line.contains("ObjectDB instances were leaked at exit")
+        || (line.starts_with("ERROR:") && line.contains("resources still in use at exit"))
 }
 
 fn unresolved_uid(line: &str) -> Option<&str> {
@@ -1022,7 +1027,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         },
         CheckPolicy {
             strict_methods: args.strict_methods,
-            fresh_import: args.fresh || args.isolated,
+            fresh_import: true,
             ignored_import_diagnostics: 0,
         },
     );
@@ -1067,33 +1072,25 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         "artifacts: {}",
         crate::engine::display_path(&artifacts.directory)
     );
-    let isolated = if args.isolated {
-        match IsolatedProject::create(&project) {
-            Ok(isolated) => Some(isolated),
-            Err(error) => {
-                report.outcome = CheckOutcome::ToolFailed;
-                report.failures.push(CheckFailure {
-                    kind: FailureKind::Tool,
-                    phase: None,
-                    message: error.to_string(),
-                });
-                artifacts.preserve_report(&mut report)?;
-                if args.output == CheckOutput::Json {
-                    eprintln!("error: {error}");
-                    emit_report(args.output, &report, None)?;
-                    return Ok(ExitCode::from(2));
-                }
-                return Err(error);
+    let isolated = match IsolatedProject::create(&project) {
+        Ok(isolated) => isolated,
+        Err(error) => {
+            report.outcome = CheckOutcome::ToolFailed;
+            report.failures.push(CheckFailure {
+                kind: FailureKind::Tool,
+                phase: None,
+                message: error.to_string(),
+            });
+            artifacts.preserve_report(&mut report)?;
+            if args.output == CheckOutput::Json {
+                eprintln!("error: {error}");
+                emit_report(args.output, &report, None)?;
+                return Ok(ExitCode::from(2));
             }
+            return Err(error);
         }
-    } else {
-        None
     };
-    let execution_project = isolated
-        .as_ref()
-        .map_or(project.as_path(), |value| value.0.as_path());
-    let persistent_import = !args.fresh && !args.isolated;
-    let result = run_project(&args, &project, execution_project, &artifacts, &mut report);
+    let result = run_project(&args, &project, &isolated.0, &artifacts, &mut report);
     if let Err(error) = &result {
         report.outcome = CheckOutcome::ToolFailed;
         report.failures.push(CheckFailure {
@@ -1101,13 +1098,6 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
             phase: None,
             message: error.to_string(),
         });
-    }
-    let failed = result.is_err() || report.outcome != CheckOutcome::Passed;
-    if failed
-        && persistent_import
-        && let Err(error) = crate::import_worker::stop_project(&project)
-    {
-        eprintln!("warning: failed to stop import worker after check failure: {error}");
     }
     if let Err(error) = artifacts.preserve_report(&mut report) {
         report.outcome = CheckOutcome::ToolFailed;
@@ -1206,7 +1196,7 @@ fn run_project(
     report.project.fingerprint = project_fingerprint(project, &paths)?;
     report.policy = CheckPolicy {
         strict_methods,
-        fresh_import: args.fresh || args.isolated,
+        fresh_import: true,
         ignored_import_diagnostics: rules.len(),
     };
     report
@@ -1239,53 +1229,62 @@ fn run_project(
         .unwrap_or("check");
     let mut sequence_base = 0;
 
-    let mut import_timer = PhaseTimer::new("import", args.timings);
-    let import = if args.fresh || args.isolated {
-        crate::import_worker::stop_project(project)?;
-        engine_output(
-            &engine,
-            project,
-            &[OsStr::new("--import"), OsStr::new("--quiet")],
-        )?
-    } else {
-        match crate::import_worker::import(project, &engine) {
-            Ok((output, reused)) => {
-                import_timer.name = if reused {
-                    "import (warm worker)"
-                } else {
-                    "import (worker startup)"
-                };
-                CapturedOutput::from_output(output)
-            }
-            Err(error) => {
-                crate::import_worker::stop_project(project)?;
-                eprintln!("warning: {error}; falling back to a fresh import");
-                engine_output(
-                    &engine,
-                    project,
-                    &[OsStr::new("--import"), OsStr::new("--quiet")],
-                )?
-            }
-        }
-    };
+    let import_timer = PhaseTimer::new("import", args.timings);
+    let import_scan = TemporaryScript::create(IMPORT_SCAN.as_bytes(), "gd")?;
+    let import_completion = TemporaryScript::create(b"", "complete")?;
+    fs::remove_file(&import_completion.0)?;
+    let import = engine_output(
+        &engine,
+        project,
+        &[
+            OsStr::new("--editor"),
+            OsStr::new("--quiet"),
+            OsStr::new("--script"),
+            import_scan.0.as_os_str(),
+            OsStr::new("--"),
+            manifest.0.as_os_str(),
+            import_completion.0.as_os_str(),
+        ],
+    )?;
     drop(import_timer);
     let import_phase = phase("import", CheckPhase::Import);
     report
         .artifacts
         .extend(artifacts.preserve("import", &import_phase, &import)?);
     let (filtered_import, ignored) = filter_import_errors(&import, rules);
+    let import_completion_index = filtered_import
+        .lines
+        .iter()
+        .position(|line| String::from_utf8_lossy(&line.bytes).contains(IMPORT_SCAN_RESULT));
+    let import_diagnostics = filtered_import.retaining_lines(|index| {
+        import_completion_index.is_none_or(|completion| index < completion)
+            && !is_cleanup_diagnostic(
+                String::from_utf8_lossy(&filtered_import.lines[index].bytes).trim(),
+            )
+    });
     report.suppressed_diagnostics += ignored;
     report.diagnostics.extend(structured_diagnostics(
-        &filtered_import,
+        &import_diagnostics,
         &import_phase,
         sequence_base,
         session_id,
     ));
     sequence_base += u64::try_from(import.lines.len()).unwrap_or(u64::MAX);
-    report.completed_phases.push(import_phase.clone());
-    let import_errors = has_errors(&filtered_import.output);
-    let mut failed = !import.output.status.success() || import_errors;
-    if !import.output.status.success() {
+    let import_completed = fs::read_to_string(&import_completion.0)
+        .is_ok_and(|result| result == IMPORT_SCAN_RESULT)
+        && import_completion_index.is_some();
+    if import_completed {
+        report.completed_phases.push(import_phase.clone());
+    } else {
+        report.failures.push(CheckFailure {
+            kind: FailureKind::MissingCompletion,
+            phase: Some(import_phase.clone()),
+            message: "editor import and GDScript scan did not report completion".into(),
+        });
+    }
+    let import_errors = has_errors(&import_diagnostics.output);
+    let mut failed = !import_completed || import_errors;
+    if !import.output.status.success() && !import_completed {
         report.failures.push(CheckFailure {
             kind: FailureKind::ProcessExit,
             phase: Some(import_phase.clone()),
@@ -1304,17 +1303,7 @@ fn run_project(
             "Import: ignored {ignored} configured diagnostic(s); use --verbose for original output."
         );
     }
-    write_diagnostics(
-        if args.verbose {
-            &import
-        } else {
-            &filtered_import
-        },
-        "Import",
-        project,
-        &paths,
-        args.verbose,
-    )?;
+    write_diagnostics(&import_diagnostics, "Import", project, &paths, args.verbose)?;
     let cache_issues = script_class_cache_issues(project)?;
     if !cache_issues.is_empty() {
         eprintln!("\nGlobal script class cache diagnostics:");
