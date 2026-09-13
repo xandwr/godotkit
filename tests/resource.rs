@@ -194,3 +194,192 @@ fn creates_verified_resources_and_preserves_destinations_on_failure() {
     }));
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn schema_requires_exactly_one_type_selector() {
+    for arguments in [
+        vec![],
+        vec!["--class", "Resource", "--script", "res://test.gd"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+            .args(["resource", "schema"])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+}
+
+#[test]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
+fn discovers_instance_defaults_hints_and_creation_support() {
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::env::temp_dir().join(format!(
+        "gdkit-schema-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(
+        directory.join("base.gd"),
+        "extends Resource\n@export var inherited: int = 7\n",
+    )
+    .unwrap();
+    fs::write(directory.join("fields.gd"), "extends \"res://base.gd\"\n@export_group(\"Details\")\n@export_enum(\"Off:0\", \"On:4\", \"Auto\") var mode: int = 4\n@export_enum(\"Small\", \"Large\") var size: String = \"Large\"\n@export_range(0.0, 1.0, 0.05) var ratio: float = 0.5\n@export var enabled: bool = true\n@export var offset: Vector3 = Vector3(1, 2, 3)\n@export var items: Array[int] = [1, 2]\n@export var child: Resource = Resource.new()\n@export var target: Resource\n@export var large: int = -9223372036854775808\nvar transient: int = 8\n@export var from_constructor: int = 0\nfunc _init():\n\tfrom_constructor = 42\n").unwrap();
+    fs::write(
+        directory.join("required.gd"),
+        "extends Resource\nfunc _init(required: int):\n\tresource_name = str(required)\n",
+    )
+    .unwrap();
+    let schema = |selector: &str, name: &str, format: &str| {
+        Command::new(env!("CARGO_BIN_EXE_gdkit"))
+            .current_dir(&directory)
+            .env_remove("GDKIT_GODOT")
+            .args([
+                "resource", "schema", selector, name, "--output", format, "--godot",
+            ])
+            .arg(&engine)
+            .output()
+            .unwrap()
+    };
+    let native = schema("--class", "StandardMaterial3D", "json");
+    assert!(
+        native.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let native: Value = serde_json::from_slice(&native.stdout).unwrap();
+    assert_eq!(native["executes_constructors_and_getters"], true);
+    let metallic = native["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "metallic")
+        .unwrap();
+    assert_eq!(metallic["default"], json!({"encoding":"json","value":0.0}));
+    assert_eq!(metallic["create_supported"], true);
+    let discovery = schema("--script", "res://fields.gd", "json");
+    assert!(
+        discovery.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&discovery.stdout),
+        String::from_utf8_lossy(&discovery.stderr)
+    );
+    let discovery: Value = serde_json::from_slice(&discovery.stdout).unwrap();
+    assert_eq!(discovery["status"], "schema");
+    assert_eq!(discovery["executes_constructors_and_getters"], true);
+    let fields = discovery["fields"].as_array().unwrap();
+    let field = |name: &str| fields.iter().find(|field| field["name"] == name).unwrap();
+    assert!(!fields.iter().any(|field| field["name"] == "Details"));
+    assert_eq!(field("inherited")["default"]["value"], 7);
+    assert_eq!(field("from_constructor")["default"]["value"], 42);
+    assert_eq!(
+        field("mode")["enum_choices"],
+        json!([{"name":"Off","value":0},{"name":"On","value":4},{"name":"Auto","value":5}])
+    );
+    assert_eq!(
+        field("size")["enum_choices"],
+        json!([{"name":"Small","value":"Small"},{"name":"Large","value":"Large"}])
+    );
+    assert!(
+        field("ratio")["hint_string"]
+            .as_str()
+            .unwrap()
+            .contains("0.05")
+    );
+    assert_eq!(field("offset")["default"]["encoding"], "godot");
+    assert_eq!(field("items")["default"]["encoding"], "godot");
+    assert_eq!(field("large")["default"]["encoding"], "godot");
+    assert_eq!(field("target")["default"]["value"], Value::Null);
+    assert_eq!(field("target")["class_name"], "Resource");
+    assert_eq!(
+        field("child")["default"],
+        json!({"encoding":"resource", "value":{"path":"", "type":"Resource", "script":null}})
+    );
+    assert_eq!(field("transient")["storage"], false);
+    assert_eq!(field("inherited")["storage"], true);
+    assert_eq!(field("inherited")["editor_visible"], true);
+    for name in [
+        "offset",
+        "items",
+        "target",
+        "script",
+        "resource_path",
+        "transient",
+    ] {
+        assert_eq!(field(name)["create_supported"], false, "{name}");
+        assert!(
+            !field(name)["unsupported_reason"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let properties: serde_json::Map<String, Value> = fields
+        .iter()
+        .filter(|field| field["create_supported"] == true && field["default"]["encoding"] == "json")
+        .map(|field| {
+            (
+                field["name"].as_str().unwrap().to_owned(),
+                field["default"]["value"].clone(),
+            )
+        })
+        .collect();
+    fs::write(
+        directory.join("spec.json"),
+        serde_json::to_vec(&json!({"script":"res://fields.gd","properties":properties})).unwrap(),
+    )
+    .unwrap();
+    let created = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "resource",
+            "create",
+            "--spec",
+            "spec.json",
+            "--out",
+            "res://generated.tres",
+            "--output",
+            "json",
+            "--godot",
+        ])
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&created.stdout),
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let human = schema("--script", "res://fields.gd", "human");
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("executes constructors and getters"));
+    assert!(human.contains("inherited: int"));
+    for (selector, name) in [
+        ("--class", "Node"),
+        ("--script", "res://required.gd"),
+        ("--script", "res://../escape.gd"),
+        ("--class", "MissingClass"),
+    ] {
+        let failed = schema(selector, name, "json");
+        assert!(!failed.status.success());
+        let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
+        assert_eq!(failed["status"], "error");
+    }
+    assert!(!fs::read_dir(&directory).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".gdkit-resource-")
+    }));
+    fs::remove_dir_all(directory).unwrap();
+}

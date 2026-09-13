@@ -423,6 +423,25 @@ pub struct ResourceArgs {
 pub enum ResourceCommand {
     #[command(about = "Create and verify a new serialized Resource using Godot")]
     Create(ResourceCreateArgs),
+    #[command(
+        about = "Discover instance fields and defaults using Godot (executes constructors and getters)"
+    )]
+    Schema(ResourceSchemaArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("resource_type").required(true).args(["class", "script"])))]
+pub struct ResourceSchemaArgs {
+    #[arg(long, help = "Native Resource class")]
+    pub class: Option<String>,
+    #[arg(long, help = "Project-local res:// GDScript path")]
+    pub script: Option<String>,
+    #[arg(long, default_value = ".")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH")]
+    pub godot: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "human")]
+    pub output: NetOutput,
 }
 
 #[derive(Debug, Args)]

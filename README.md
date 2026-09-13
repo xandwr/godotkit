@@ -134,6 +134,32 @@ verified `properties`; errors return `status`, `stage`, `field`, and `message`,
 with engine diagnostics when available. Creation failures exit 1. The returned
 `res://` path is a persistent reference, not a live editor object handle.
 
+`gdkit resource schema --class StandardMaterial3D --output json` discovers
+instance fields using the configured engine. For a custom Resource, use
+`gdkit resource schema --script res://resources/weapon_definition.gd --output json`.
+Exactly one type selector is required. Schema shares creation's construction and
+property rules, accepts `--project` and `--godot`, and includes inherited fields.
+It instantiates the selected type and executes constructors and getters,
+including project scripts; it does not save a resource or enter the main scene.
+
+JSON results have `status: "schema"`, native `type`, optional `script`,
+`executes_constructors_and_getters: true`, `integer_min`, `integer_max`, and
+`fields`. Each field contains `name`, `type`, `type_id`, `class_name`, instance
+`default`, raw `hint` and `hint_string`, decoded `enum_choices`, raw `usage`,
+`storage`, `read_only`, `editor_visible`, `create_supported`, and an
+`unsupported_reason`. Inspector group/category entries are omitted. Enum choices
+contain `name` and `value`, including explicit integer enum values. Hints describe
+editor controls; setters and reload verification still determine creation success.
+
+Defaults carry an `encoding` and `value`: `json` for transportable scalar values
+and null; `resource` for a descriptive path/type/script reference; `godot` for
+Godot text describing other values, including compound or out-of-range defaults.
+An empty resource path denotes an unsaved resource. Descriptive defaults are not
+creation inputs. `create_supported` describes the field's type and usage, so
+agents must also check a default's encoding and the integer limits before using
+it in a spec. Defaults reflect a newly constructed instance, including constructor
+changes. Failures use creation's error format and exit 1; selector errors exit 2.
+
 `gdkit net [project]` prints the project's authored multiplayer topology without
 entering its main scene. It asks the selected engine for effective GDScript RPC
 configuration, then combines that result with gdview source locations for RPC

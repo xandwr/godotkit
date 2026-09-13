@@ -1,5 +1,5 @@
 use crate::{
-    cli::{NetOutput, ResourceArgs, ResourceCommand, ResourceCreateArgs},
+    cli::{NetOutput, ResourceArgs, ResourceCommand, ResourceCreateArgs, ResourceSchemaArgs},
     engine, process,
 };
 use serde::Deserialize;
@@ -53,6 +53,24 @@ fn local_path(project: &Path, value: &str) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
+fn validate_type(
+    project: &Path,
+    class: &Option<String>,
+    script: &Option<String>,
+) -> Result<(), Box<dyn Error>> {
+    match (class, script) {
+        (Some(name), None) if !name.is_empty() => {}
+        (None, Some(path)) => {
+            local_path(project, path)?;
+            if !path.ends_with(".gd") {
+                return Err("script must be a .gd resource path".into());
+            }
+        }
+        _ => return Err("spec requires exactly one nonempty class or script".into()),
+    }
+    Ok(())
+}
+
 fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
     let project = engine::project_root(&args.project)?;
     let destination = local_path(&project, &args.out)?;
@@ -68,16 +86,7 @@ fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
     }
     let text = fs::read_to_string(&args.spec)?;
     let spec: Spec = serde_json::from_str(&text)?;
-    match (&spec.class, &spec.script) {
-        (Some(name), None) if !name.is_empty() => {}
-        (None, Some(path)) => {
-            local_path(&project, path)?;
-            if !path.ends_with(".gd") {
-                return Err("script must be a .gd resource path".into());
-            }
-        }
-        _ => return Err("spec requires exactly one nonempty class or script".into()),
-    }
+    validate_type(&project, &spec.class, &spec.script)?;
     for (field, value) in &spec.properties {
         if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
             return Ok(
@@ -97,8 +106,47 @@ fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
             );
         }
     }
-    let executable = engine::resolve(&project, args.godot.as_deref())?;
-    engine::validated_version(&executable, &project)?;
+    let (workspace, mut result) = worker(&project, args.godot.as_deref(), parent, &text, "create")?;
+    if result["status"] != "created" {
+        return Ok(result);
+    }
+    if let Err(error) = fs::hard_link(workspace.0.join("resource.tres"), &destination) {
+        return Ok(json!({"status": "error", "stage": "publish", "field": "",
+            "message": error.to_string()}));
+    }
+    result["path"] = json!(args.out);
+    Ok(result)
+}
+
+fn schema(args: ResourceSchemaArgs) -> Result<Value, Box<dyn Error>> {
+    let project = engine::project_root(&args.project)?;
+    validate_type(&project, &args.class, &args.script)?;
+    let mut spec = json!({});
+    if let Some(class) = args.class {
+        spec["class"] = json!(class);
+    }
+    if let Some(script) = args.script {
+        spec["script"] = json!(script);
+    }
+    let (_, result) = worker(
+        &project,
+        args.godot.as_deref(),
+        &std::env::temp_dir(),
+        &serde_json::to_string(&spec)?,
+        "schema",
+    )?;
+    Ok(result)
+}
+
+fn worker(
+    project: &Path,
+    godot: Option<&Path>,
+    parent: &Path,
+    text: &str,
+    operation: &str,
+) -> Result<(Workspace, Value), Box<dyn Error>> {
+    let executable = engine::resolve(project, godot)?;
+    engine::validated_version(&executable, project)?;
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let workspace =
         Workspace(parent.join(format!(".gdkit-resource-{}-{nonce}", std::process::id())));
@@ -111,11 +159,12 @@ fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
     let captured = process::run(
         Command::new(executable)
             .args(["--headless", "--no-header", "--path"])
-            .arg(&project)
+            .arg(project)
             .arg("--script")
             .arg(&script)
             .arg("--")
             .arg(&request)
+            .arg(operation)
             .arg(&staged),
         Some(Duration::from_secs(60)),
     )?;
@@ -132,7 +181,12 @@ fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
         });
     if captured.timed_out
         || !captured.output.status.success()
-        || result["status"] != "created"
+        || result["status"]
+            != if operation == "schema" {
+                "schema"
+            } else {
+                "created"
+            }
         || stderr.contains("SCRIPT ERROR:")
         || stderr.contains("ERROR:")
         || stderr.contains("WARNING:")
@@ -147,26 +201,26 @@ fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
             if !stderr.trim().is_empty() {
                 result["diagnostics"] = json!(stderr);
             }
-            return Ok(result);
+            return Ok((workspace, result));
         }
-        return Ok(json!({"status": "error", "stage": "verify", "field": "",
-            "message": format!("Resource worker failed\n{stdout}{stderr}")}));
+        return Ok((
+            workspace,
+            json!({"status": "error", "stage": if operation == "schema" {"schema"} else {"verify"}, "field": "",
+            "message": format!("Resource worker failed\n{stdout}{stderr}")}),
+        ));
     }
     if !stderr.trim().is_empty() {
         eprint!("{stderr}");
     }
-    if let Err(error) = fs::hard_link(&staged, &destination) {
-        return Ok(json!({"status": "error", "stage": "publish", "field": "",
-            "message": error.to_string()}));
-    }
-    result["path"] = json!(args.out);
-    Ok(result)
+    Ok((workspace, result))
 }
 
 pub(crate) fn run(args: ResourceArgs) -> Result<ExitCode, Box<dyn Error>> {
-    let ResourceCommand::Create(args) = args.command;
-    let output = args.output;
-    let result = create(args).unwrap_or_else(|error| json!({"status": "error", "stage": "prepare", "field": "", "message": error.to_string()}));
+    let (output, result) = match args.command {
+        ResourceCommand::Create(args) => (args.output, create(args)),
+        ResourceCommand::Schema(args) => (args.output, schema(args)),
+    };
+    let result = result.unwrap_or_else(|error| json!({"status": "error", "stage": "prepare", "field": "", "message": error.to_string()}));
     match output {
         NetOutput::Json => println!("{}", serde_json::to_string(&result)?),
         NetOutput::Human => {
@@ -180,9 +234,39 @@ pub(crate) fn run(args: ResourceArgs) -> Result<ExitCode, Box<dyn Error>> {
                 if let Some(script) = result["script"].as_str() {
                     println!("Script: {script}");
                 }
+            } else if result["status"] == "schema" {
+                println!(
+                    "Resource schema: {}",
+                    result["type"].as_str().unwrap_or_default()
+                );
+                if let Some(script) = result["script"].as_str() {
+                    println!("Script: {script}");
+                }
+                println!(
+                    "Discovery executes constructors and getters, including project scripts when selected."
+                );
+                for field in result["fields"].as_array().into_iter().flatten() {
+                    println!(
+                        "{}: {} = {} [{}]",
+                        field["name"].as_str().unwrap_or_default(),
+                        field["type"].as_str().unwrap_or_default(),
+                        field["default"]["value"],
+                        if field["create_supported"] == true {
+                            "create supported"
+                        } else {
+                            field["unsupported_reason"].as_str().unwrap_or_default()
+                        }
+                    );
+                    if !field["hint_string"].as_str().unwrap_or_default().is_empty() {
+                        println!(
+                            "  Hint {}: {}; choices: {}",
+                            field["hint"], field["hint_string"], field["enum_choices"]
+                        );
+                    }
+                }
             } else {
                 eprintln!(
-                    "Resource creation failed [{}] {}: {}",
+                    "Resource operation failed [{}] {}: {}",
                     result["stage"].as_str().unwrap_or_default(),
                     result["field"].as_str().unwrap_or_default(),
                     result["message"].as_str().unwrap_or_default()
@@ -193,9 +277,11 @@ pub(crate) fn run(args: ResourceArgs) -> Result<ExitCode, Box<dyn Error>> {
             }
         }
     }
-    Ok(if result["status"] == "created" {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
-    })
+    Ok(
+        if result["status"] == "created" || result["status"] == "schema" {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        },
+    )
 }
