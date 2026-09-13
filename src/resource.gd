@@ -7,11 +7,22 @@ const VARIANT_TYPES := {
 	"Vector2": TYPE_VECTOR2, "Vector3": TYPE_VECTOR3, "Vector4": TYPE_VECTOR4,
 	"Vector2i": TYPE_VECTOR2I, "Vector3i": TYPE_VECTOR3I, "Vector4i": TYPE_VECTOR4I,
 	"Color": TYPE_COLOR,
+	"Rect2": TYPE_RECT2, "Rect2i": TYPE_RECT2I,
+	"Transform2D": TYPE_TRANSFORM2D, "Transform3D": TYPE_TRANSFORM3D,
+	"Quaternion": TYPE_QUATERNION, "Basis": TYPE_BASIS, "Plane": TYPE_PLANE, "AABB": TYPE_AABB,
 }
 const VARIANT_COMPONENTS := {
 	TYPE_VECTOR2: ["x", "y"], TYPE_VECTOR3: ["x", "y", "z"], TYPE_VECTOR4: ["x", "y", "z", "w"],
 	TYPE_VECTOR2I: ["x", "y"], TYPE_VECTOR3I: ["x", "y", "z"], TYPE_VECTOR4I: ["x", "y", "z", "w"],
 	TYPE_COLOR: ["r", "g", "b", "a"],
+	TYPE_RECT2: ["position.x", "position.y", "size.x", "size.y"],
+	TYPE_RECT2I: ["position.x", "position.y", "size.x", "size.y"],
+	TYPE_TRANSFORM2D: ["x.x", "x.y", "y.x", "y.y", "origin.x", "origin.y"],
+	TYPE_BASIS: ["x.x", "x.y", "x.z", "y.x", "y.y", "y.z", "z.x", "z.y", "z.z"],
+	TYPE_TRANSFORM3D: ["basis.x.x", "basis.x.y", "basis.x.z", "basis.y.x", "basis.y.y", "basis.y.z", "basis.z.x", "basis.z.y", "basis.z.z", "origin.x", "origin.y", "origin.z"],
+	TYPE_QUATERNION: ["x", "y", "z", "w"],
+	TYPE_PLANE: ["normal.x", "normal.y", "normal.z", "d"],
+	TYPE_AABB: ["position.x", "position.y", "position.z", "size.x", "size.y", "size.z"],
 }
 
 var failed := false
@@ -120,9 +131,9 @@ func variant_contract(kind: int) -> Dictionary:
 				contract["value_encoding"] = "array"
 				contract["components"] = VARIANT_COMPONENTS[kind]
 				contract["length"] = VARIANT_COMPONENTS[kind].size()
-				contract["component_type"] = "integer" if kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I] else "finite number"
+				contract["component_type"] = "integer" if kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I, TYPE_RECT2I] else "finite number"
 				contract["exact_components"] = true
-				if kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I]:
+				if kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I, TYPE_RECT2I]:
 					contract["component_minimum"] = -2147483648
 					contract["component_maximum"] = 2147483647
 			if kind == TYPE_INT:
@@ -133,13 +144,21 @@ func variant_contract(kind: int) -> Dictionary:
 	return {}
 
 
+func component_values(value: Variant) -> Array:
+	var components := []
+	for component: String in VARIANT_COMPONENTS[typeof(value)]:
+		var current: Variant = value
+		for member: String in component.split("."):
+			current = current[member]
+		components.append(current)
+	return components
+
+
 func encode_variant(value: Variant) -> Dictionary:
 	var kind := typeof(value)
 	var payload: Variant = str(value)
 	if VARIANT_COMPONENTS.has(kind):
-		payload = []
-		for index in VARIANT_COMPONENTS[kind].size():
-			payload.append(value[index])
+		payload = component_values(value)
 	return { "$variant": { "type": variant_contract(kind).type, "value": payload } }
 
 
@@ -180,7 +199,7 @@ func decode_components(payload: Variant, kind: int, location: String) -> Variant
 		fail("validate", "Expected %d tagged components" % contract.length, location)
 		return null
 	var components := []
-	var integer_components := kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I]
+	var integer_components := kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I, TYPE_RECT2I]
 	for index in payload.size():
 		var component: Variant = payload[index]
 		var component_path := location + ".$variant.value[%d]" % index
@@ -202,8 +221,17 @@ func decode_components(payload: Variant, kind: int, location: String) -> Variant
 		TYPE_VECTOR3I: result = Vector3i(components[0], components[1], components[2])
 		TYPE_VECTOR4I: result = Vector4i(components[0], components[1], components[2], components[3])
 		TYPE_COLOR: result = Color(components[0], components[1], components[2], components[3])
+		TYPE_RECT2: result = Rect2(components[0], components[1], components[2], components[3])
+		TYPE_RECT2I: result = Rect2i(components[0], components[1], components[2], components[3])
+		TYPE_TRANSFORM2D: result = Transform2D(Vector2(components[0], components[1]), Vector2(components[2], components[3]), Vector2(components[4], components[5]))
+		TYPE_BASIS: result = Basis(Vector3(components[0], components[1], components[2]), Vector3(components[3], components[4], components[5]), Vector3(components[6], components[7], components[8]))
+		TYPE_TRANSFORM3D: result = Transform3D(Basis(Vector3(components[0], components[1], components[2]), Vector3(components[3], components[4], components[5]), Vector3(components[6], components[7], components[8])), Vector3(components[9], components[10], components[11]))
+		TYPE_QUATERNION: result = Quaternion(components[0], components[1], components[2], components[3])
+		TYPE_PLANE: result = Plane(Vector3(components[0], components[1], components[2]), components[3])
+		TYPE_AABB: result = AABB(Vector3(components[0], components[1], components[2]), Vector3(components[3], components[4], components[5]))
+	var observed := component_values(result)
 	for index in components.size():
-		if result[index] != components[index]:
+		if observed[index] != components[index]:
 			fail("validate", "Component cannot be represented exactly by the engine", location + ".$variant.value[%d]" % index)
 			return null
 	return result
@@ -217,8 +245,8 @@ func default_value(value: Variant) -> Dictionary:
 		return { "encoding": "json", "value": value }
 	if not variant_contract(kind).is_empty():
 		if VARIANT_COMPONENTS.has(kind):
-			for index in VARIANT_COMPONENTS[kind].size():
-				if not is_finite(float(value[index])):
+			for component: Variant in component_values(value):
+				if not is_finite(float(component)):
 					return { "encoding": "godot", "value": var_to_str(value) }
 		return { "encoding": "tagged", "value": encode_variant(value) }
 	if value is Resource:

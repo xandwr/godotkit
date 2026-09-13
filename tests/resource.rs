@@ -1166,3 +1166,260 @@ fn tagged_vectors_and_colors_preserve_components_and_reject_loss() {
     assert_eq!(offset["default"]["encoding"], "godot");
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
+fn tagged_rectangles_and_spatial_values_round_trip_without_normalization() {
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::env::temp_dir().join(format!(
+        "gdkit-spatial-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(directory.join("spatial.gd"), "extends Resource\n@export var rect: Rect2 = Rect2(0.1, 0.2, 0.3, 0.4)\n@export var recti: Rect2i\n@export var transform2: Transform2D\n@export var transform3: Transform3D\n@export var quaternion: Quaternion\n@export var basis: Basis\n@export var plane: Plane\n@export var bounds: AABB\n@export var child: Resource\n@export var clamped: Transform3D = Transform3D.IDENTITY:\n\tset(new_value):\n\t\tnew_value.origin = Vector3.ZERO\n\t\tclamped = new_value\n").unwrap();
+    fs::write(directory.join("reload.gd"), "extends Resource\n@export var reload_transform: Transform3D = Transform3D.IDENTITY:\n\tget:\n\t\treturn reload_transform if resource_path.is_empty() else Transform3D(reload_transform.basis, reload_transform.origin + Vector3.ONE)\n").unwrap();
+    let run = |spec: Value, destination: &str| {
+        fs::write(
+            directory.join("spec.json"),
+            serde_json::to_vec(&spec).unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+            .current_dir(&directory)
+            .env_remove("GDKIT_GODOT")
+            .args([
+                "resource",
+                "create",
+                "--spec",
+                "spec.json",
+                "--out",
+                destination,
+                "--output",
+                "json",
+                "--godot",
+            ])
+            .arg(&engine)
+            .output()
+            .unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "{error}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (output.status.success(), result)
+    };
+    let cases = [
+        (
+            "rect",
+            "Rect2",
+            json!([1.5, -2.25, -3.125, 4.5]),
+            "Rect2(1.5, -2.25, -3.125, 4.5)",
+        ),
+        (
+            "recti",
+            "Rect2i",
+            json!([-2147483648, 2147483647, -3, 4]),
+            "Rect2i(-2147483648, 2147483647, -3, 4)",
+        ),
+        (
+            "transform2",
+            "Transform2D",
+            json!([2, 3, 4, 5, -6, 7]),
+            "Transform2D(Vector2(2,3), Vector2(4,5), Vector2(-6,7))",
+        ),
+        (
+            "basis",
+            "Basis",
+            json!([2, 3, 4, 5, 6, 7, 8, 9, 10]),
+            "Basis(Vector3(2,3,4), Vector3(5,6,7), Vector3(8,9,10))",
+        ),
+        (
+            "transform3",
+            "Transform3D",
+            json!([2, 3, 4, 5, 6, 7, 8, 9, 10, -11, 12, 13]),
+            "Transform3D(Basis(Vector3(2,3,4), Vector3(5,6,7), Vector3(8,9,10)), Vector3(-11,12,13))",
+        ),
+        (
+            "quaternion",
+            "Quaternion",
+            json!([1.5, -2.25, 3.125, 4.5]),
+            "Quaternion(1.5,-2.25,3.125,4.5)",
+        ),
+        (
+            "plane",
+            "Plane",
+            json!([2, 3, 4, -5]),
+            "Plane(Vector3(2,3,4), -5)",
+        ),
+        (
+            "bounds",
+            "AABB",
+            json!([1, 2, 3, -4, 5, 6]),
+            "AABB(Vector3(1,2,3), Vector3(-4,5,6))",
+        ),
+    ];
+    let tag = |kind: &str, payload: Value| json!({"$variant":{"type":kind,"value":payload}});
+    let properties: serde_json::Map<String, Value> = cases
+        .iter()
+        .map(|(name, kind, payload, _)| (name.to_string(), tag(kind, payload.clone())))
+        .collect();
+    let expected: serde_json::Map<String, Value> = cases
+        .iter()
+        .map(|(name, kind, payload, _)| {
+            let payload = if *kind == "Rect2i" {
+                payload.clone()
+            } else {
+                json!(
+                    payload
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|value| value.as_f64().unwrap())
+                        .collect::<Vec<_>>()
+                )
+            };
+            (name.to_string(), tag(kind, payload))
+        })
+        .collect();
+    let (ok, result) = run(
+        json!({"script":"res://spatial.gd","properties":properties}),
+        "res://spatial.tres",
+    );
+    assert!(ok, "{result}");
+    assert_eq!(result["properties"], json!(expected));
+    let (ok, result) = run(
+        json!({"script":"res://spatial.gd","properties":{"child":{"$resource":{"script":"res://spatial.gd","properties":properties}}}}),
+        "res://nested.tres",
+    );
+    assert!(ok, "{result}");
+    assert_eq!(
+        result["properties"]["child"]["$resource"]["properties"],
+        json!(expected)
+    );
+    let mut probe =
+        "extends SceneTree\nfunc _initialize():\n\tvar graph = load(\"res://spatial.tres\")\n"
+            .to_owned();
+    for (name, _, _, constructor) in &cases {
+        probe.push_str(&format!("\tassert(graph.{name} == {constructor})\n"));
+    }
+    probe.push_str("\tquit()\n");
+    fs::write(directory.join("probe.gd"), probe).unwrap();
+    let probe = Command::new(&engine)
+        .args(["--headless", "--path"])
+        .arg(&directory)
+        .args(["--script", "res://probe.gd"])
+        .output()
+        .unwrap();
+    assert!(probe.status.success());
+    assert!(
+        !String::from_utf8_lossy(&probe.stderr).contains("ERROR:"),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let schema = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "resource",
+            "schema",
+            "--script",
+            "res://spatial.gd",
+            "--output",
+            "json",
+            "--godot",
+        ])
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(schema.status.success());
+    let schema: Value = serde_json::from_slice(&schema.stdout).unwrap();
+    let fields = schema["fields"].as_array().unwrap();
+    for (name, kind, payload, _) in &cases {
+        let field = fields.iter().find(|field| field["name"] == *name).unwrap();
+        assert_eq!(field["create_supported"], true);
+        assert_eq!(field["accepted_inputs"], json!(["$variant"]));
+        assert_eq!(field["default"]["encoding"], "tagged");
+        assert_eq!(field["variant_contract"]["type"], *kind);
+        assert_eq!(
+            field["variant_contract"]["length"],
+            payload.as_array().unwrap().len()
+        );
+        assert_eq!(
+            field["variant_contract"]["components"]
+                .as_array()
+                .unwrap()
+                .len(),
+            payload.as_array().unwrap().len()
+        );
+        assert_eq!(field["variant_contract"]["exact_components"], true);
+        let mut short = payload.as_array().unwrap().clone();
+        short.pop();
+        let mut long = payload.as_array().unwrap().clone();
+        long.push(json!(0));
+        for invalid in [
+            tag(kind, json!(short)),
+            tag(kind, json!(long)),
+            tag(kind, json!("not an array")),
+            tag("Vector2", json!([1, 2])),
+        ] {
+            let (ok, result) = run(
+                json!({"script":"res://spatial.gd","properties":{*name:invalid}}),
+                "res://failure.tres",
+            );
+            assert!(!ok, "{result}");
+            assert_eq!(result["stage"], "validate");
+            assert_eq!(result["field"], *name);
+            assert!(!directory.join("failure.tres").exists());
+        }
+        let mut inexact = payload.as_array().unwrap().clone();
+        inexact[0] = json!(0.1);
+        let (ok, result) = run(
+            json!({"script":"res://spatial.gd","properties":{*name:tag(kind,json!(inexact))}}),
+            "res://failure.tres",
+        );
+        assert!(!ok, "{result}");
+        assert_eq!(result["field"], format!("{name}.$variant.value[0]"));
+    }
+    let defaults: serde_json::Map<String, Value> = fields
+        .iter()
+        .filter(|field| {
+            field["create_supported"] == true
+                && ["json", "tagged"].contains(&field["default"]["encoding"].as_str().unwrap())
+        })
+        .map(|field| {
+            (
+                field["name"].as_str().unwrap().to_owned(),
+                field["default"]["value"].clone(),
+            )
+        })
+        .collect();
+    let (ok, result) = run(
+        json!({"script":"res://spatial.gd","properties":defaults}),
+        "res://defaults.tres",
+    );
+    assert!(ok, "{result}");
+    let transform = properties["transform3"].clone();
+    let (ok, result) = run(
+        json!({"script":"res://spatial.gd","properties":{"clamped":transform}}),
+        "res://failure.tres",
+    );
+    assert!(!ok, "{result}");
+    assert_eq!(result["stage"], "assign");
+    assert_eq!(result["field"], "clamped");
+    let (ok, result) = run(
+        json!({"script":"res://reload.gd","properties":{"reload_transform":transform}}),
+        "res://failure.tres",
+    );
+    assert!(!ok, "{result}");
+    assert_eq!(result["stage"], "verify", "{result}");
+    assert_eq!(result["field"], "reload_transform");
+    assert!(!directory.join("failure.tres").exists());
+    fs::remove_dir_all(directory).unwrap();
+}

@@ -119,7 +119,8 @@ script-class or asset caches with `gdkit cache refresh` when necessary.
 
 Properties must be writable and serialized. Supported values are booleans,
 integers, floats, strings, tagged `StringName`, `NodePath`, vectors, integer
-vectors, and `Color` values, Resource fields, and typed arrays of Resources. Unknown fields, transient fields,
+vectors, `Color`, rectangles, and spatial values, Resource fields, and typed
+arrays of Resources. Unknown fields, transient fields,
 scalar containers, and unsupported compound values fail explicitly. Plain JSON
 integer input is limited to the exact transport range of plus or minus
 9007199254740991. Tagged integer strings support the full signed 64-bit range.
@@ -168,6 +169,33 @@ are not clamped to the 0 to 1 range. Ordinary JSON arrays do not imply a vector
 or color. Component errors identify paths such as
 `offset.$variant.value[2]`. Schema defaults and creation results use full-precision
 JSON output so engine-authored components can be reused exactly.
+
+Rectangles and spatial types use the same flat, numeric component arrays.
+`variant_contract.components` gives their exact order:
+
+| Tag | Component order |
+| --- | --- |
+| `Rect2`, `Rect2i` | position x/y, size x/y |
+| `Transform2D` | x column x/y, y column x/y, origin x/y |
+| `Basis` | x column x/y/z, y column x/y/z, z column x/y/z |
+| `Transform3D` | basis columns in the order above, then origin x/y/z |
+| `Quaternion` | x, y, z, w |
+| `Plane` | normal x/y/z, d |
+| `AABB` | position x/y/z, size x/y/z |
+
+`Rect2i` components follow the same signed 32-bit rules as integer vectors.
+Sizes, bases, quaternions, and plane normals retain the supplied values; the
+codec does not take absolute sizes, orthonormalize matrices, or normalize
+rotations and normals. Setters and serialization still must preserve every
+requested value. For example:
+
+```json
+{
+  "region": {"$variant": {"type": "Rect2", "value": [1.5, 2.25, 8.0, 4.0]}},
+  "transform": {"$variant": {"type": "Transform3D", "value": [1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 3, 4]}}
+}
+```
+
 
 
 The verified file is published without overwriting an existing destination;
