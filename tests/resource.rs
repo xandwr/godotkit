@@ -406,7 +406,7 @@ fn creates_nested_resources_and_verifies_external_references() {
         "extends NestedStats\n@export var bonus: int = 1\n",
     )
     .unwrap();
-    fs::write(directory.join("weapon.gd"), "extends Resource\n@export var stats: NestedStats\n@export var icon: Texture2D\n@export var any: Resource\n").unwrap();
+    fs::write(directory.join("weapon.gd"), "extends Resource\n@export var stats: NestedStats\n@export var icon: Texture2D\n@export var any: Resource\n@export var effects: Array[NestedStats] = []\n@export var resources: Array[Resource] = []\n@export var textures: Array[Texture2D] = []\n").unwrap();
     fs::write(directory.join("mutator.gd"), "extends Resource\n@export var stats: NestedStats:\n\tset(value):\n\t\tstats = value\n\t\tif stats != null:\n\t\t\tstats.damage = 99\n").unwrap();
     fs::write(
         directory.join("cycle.gd"),
@@ -416,6 +416,7 @@ fn creates_nested_resources_and_verifies_external_references() {
     fs::write(directory.join("reload_child.gd"), "extends Resource\n@export var damage: int = 0:\n\tget:\n\t\treturn damage if resource_path.is_empty() else damage + 1\n").unwrap();
     fs::write(directory.join("external.tres"), "[gd_resource type=\"Resource\" script_class=\"NestedStats\" load_steps=2 format=3]\n[ext_resource type=\"Script\" path=\"res://stats.gd\" id=\"1\"]\n[resource]\nscript = ExtResource(\"1\")\ndamage = 15\n").unwrap();
     fs::write(directory.join("icon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\" fill=\"red\"/></svg>").unwrap();
+    fs::write(directory.join("anonymous.gd"), "extends Resource\nconst Stats = preload(\"res://derived.gd\")\n@export var effects: Array[Stats] = []\n").unwrap();
     let import = Command::new(&engine)
         .args(["--headless", "--editor", "--path"])
         .arg(&directory)
@@ -489,6 +490,54 @@ fn creates_nested_resources_and_verifies_external_references() {
         "res://references.tres",
     );
     assert!(ok, "{result}");
+    for script in ["res://weapon.gd", "res://anonymous.gd"] {
+        let (ok, result) = run(
+            json!({"script":script,"properties":{"effects":[null,{"$ref":"res://external.tres"},{"$resource":{"script":"res://derived.gd","properties":{"damage":21}}},{"$resource":{"script":"res://derived.gd","properties":{"damage":22}}}]}}),
+            if script.contains("anonymous") {
+                "res://anonymous_array.tres"
+            } else {
+                "res://arrays.tres"
+            },
+        );
+        if script.contains("anonymous") {
+            assert!(!ok, "{result}");
+            assert_eq!(result["field"], "properties.effects[1]");
+        } else {
+            assert!(ok, "{result}");
+        }
+        let (ok, result) = run(
+            json!({"script":script,"properties":{"effects":[]}}),
+            if script.contains("anonymous") {
+                "res://anonymous_empty.tres"
+            } else {
+                "res://empty.tres"
+            },
+        );
+        assert!(ok, "{result}");
+    }
+    let (ok, result) = run(
+        json!({"script":"res://weapon.gd","properties":{"resources":[null,{"$resource":{"class":"Resource","properties":{}}},{"$ref":"res://external.tres"}],"textures":[{"$ref":"res://icon.svg"}]}}),
+        "res://native_arrays.tres",
+    );
+    assert!(ok, "{result}");
+    let (ok, result) = run(
+        json!({"script":"res://anonymous.gd","properties":{"effects":[{"$resource":{"script":"res://derived.gd","properties":{"damage":23}}}]}}),
+        "res://anonymous_valid.tres",
+    );
+    assert!(ok, "{result}");
+    fs::write(directory.join("verify_arrays.gd"), "extends SceneTree\nfunc _initialize():\n\tvar graph = load(\"res://arrays.tres\")\n\tassert(graph.effects.size() == 4)\n\tassert(graph.effects[0] == null)\n\tassert(graph.effects[1].resource_path == \"res://external.tres\")\n\tassert(graph.effects[2].damage == 21 and graph.effects[3].damage == 22)\n\tassert(graph.effects[2] != graph.effects[3])\n\tvar empty = load(\"res://empty.tres\").effects\n\tassert(empty.is_empty() and empty.get_typed_script() == load(\"res://stats.gd\"))\n\tvar anonymous = load(\"res://anonymous_empty.tres\").effects\n\tassert(anonymous.is_empty() and anonymous.get_typed_script() == load(\"res://derived.gd\"))\n\tquit()\n").unwrap();
+    let verification = Command::new(&engine)
+        .args(["--headless", "--path"])
+        .arg(&directory)
+        .args(["--script", "res://verify_arrays.gd"])
+        .output()
+        .unwrap();
+    assert!(verification.status.success());
+    assert!(
+        !String::from_utf8_lossy(&verification.stderr).contains("SCRIPT ERROR:"),
+        "{}",
+        String::from_utf8_lossy(&verification.stderr)
+    );
     let schema = Command::new(env!("CARGO_BIN_EXE_gdkit"))
         .current_dir(&directory)
         .env_remove("GDKIT_GODOT")
@@ -513,11 +562,58 @@ fn creates_nested_resources_and_verifies_external_references() {
         .find(|field| field["name"] == "stats")
         .unwrap();
     assert_eq!(stats["create_supported"], true);
+    let effects = schema["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "effects")
+        .unwrap();
+    assert_eq!(effects["create_supported"], true);
+    assert_eq!(effects["accepted_inputs"], json!(["array"]));
+    assert_eq!(
+        effects["element_accepted_inputs"],
+        json!(["null", "$ref", "$resource"])
+    );
+    assert_eq!(
+        effects["element_constraints"][0]["script"],
+        "res://stats.gd"
+    );
+
     assert_eq!(
         stats["resource_constraints"],
         json!([{"class":"NestedStats", "script":"res://stats.gd"}])
     );
     for (spec, field, stage) in [
+        (
+            json!({"script":"res://weapon.gd","properties":{"resources":[{"$resource":{"script":"res://reload_child.gd","properties":{"damage":5}}}]}}),
+            "properties.resources[0].properties.damage",
+            "verify",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"effects":[{"$ref":"res://missing.tres"}]}}),
+            "properties.effects[0]",
+            "load",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"effects":[null,{"$resource":{"class":"Resource","properties":{}}}]}}),
+            "properties.effects[1]",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"effects":[null,{"$resource":{"script":"res://stats.gd","properties":{"damage":"bad"}}}]}}),
+            "properties.effects[1].properties.damage",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"effects":[1]}}),
+            "effects[0]",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"effects":null}}),
+            "effects",
+            "validate",
+        ),
         (
             json!({"script":"res://weapon.gd","properties":{"stats":{"$resource":{"class":"Resource","properties":{}}}}}),
             "stats",

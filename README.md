@@ -166,8 +166,12 @@ object fails creation. Nested errors identify fields such as
 `properties.stats.properties.damage`; root field errors retain their existing
 names. Cyclic graphs, more than 16 nested Resources, and serialized container
 graphs deeper than 16 are rejected. Compound serialized dictionary keys and
-non-Resource serialized objects are also unsupported. Arrays of Resources and
-shared inline-object identities remain outside the input format.
+non-Resource serialized objects are also unsupported. Typed arrays of Resources accept JSON arrays containing null, `$ref`, and
+`$resource` entries, for example `"effects": [null, {"$ref": "res://effect.tres"}]`.
+Native and custom script element types, order, and empty-array typing survive
+reload. Element errors include indices such as
+`properties.effects[2].properties.duration`. Each inline entry creates a separate
+object; named shared inline-object identities remain outside the input format.
 
 `gdkit resource schema --class StandardMaterial3D --output json` discovers
 instance fields using the configured engine. For a custom Resource, use
@@ -185,7 +189,9 @@ JSON results have `status: "schema"`, native `type`, optional `script`,
 `unsupported_reason`, `accepted_inputs`, and `resource_constraints`. Resource
 constraints contain native/global `class` and a registered `script` path when
 available. Supported Resource fields list `null`, `$ref`, and `$resource` as
-accepted inputs. Results also include `max_resource_depth`. Inspector
+accepted inputs. Supported Resource arrays list `array`, expose
+`element_constraints`, and list their allowed `element_accepted_inputs`.
+Results also include `max_resource_depth`. Inspector
 group/category entries are omitted. Enum choices
 contain `name` and `value`, including explicit integer enum values. Hints describe
 editor controls; setters and reload verification still determine creation success.

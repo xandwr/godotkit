@@ -46,6 +46,9 @@ func unsupported_reason(property: Dictionary) -> String:
 	if int(property.type) == TYPE_OBJECT:
 		if resource_constraints(property).is_empty():
 			return "Object field must declare a Resource type"
+	elif int(property.type) == TYPE_ARRAY:
+		if not property.has("element") or resource_constraints(property.element).is_empty():
+			return "Array must declare a Resource element type"
 	elif int(property.type) not in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING]:
 		return "Only scalar and Resource fields are supported"
 	return ""
@@ -54,6 +57,11 @@ func unsupported_reason(property: Dictionary) -> String:
 func resource_constraints(property: Dictionary) -> Array:
 	var constraints := []
 	if int(property.type) != TYPE_OBJECT: return constraints
+	if property.has("element_script"):
+		var element_script: Script = property.element_script
+		if ClassDB.is_parent_class(element_script.get_instance_base_type(), "Resource"):
+			constraints.append({ "class": element_script.get_instance_base_type(), "script": element_script.resource_path })
+		return constraints
 	var names := str(property.hint_string) if int(property.hint) == PROPERTY_HINT_RESOURCE_TYPE else str(property.class_name)
 	for class_id: String in names.split(",", false):
 		class_id = class_id.strip_edges()
@@ -82,6 +90,13 @@ func property_metadata(resource: Resource) -> Dictionary:
 	var metadata := {}
 	for property: Dictionary in resource.get_property_list():
 		if int(property.usage) & (PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP | PROPERTY_USAGE_CATEGORY) == 0:
+			if int(property.type) == TYPE_ARRAY:
+				var current: Variant = resource.get(property.name)
+				if current is Array and current.get_typed_builtin() == TYPE_OBJECT:
+					var element_script := current.get_typed_script() as Script
+					property["element"] = { "type": TYPE_OBJECT, "hint": PROPERTY_HINT_NONE, "hint_string": "", "class_name": current.get_typed_class_name() }
+					if element_script != null:
+						property.element["element_script"] = element_script
 			metadata[property.name] = property
 	return metadata
 
@@ -136,7 +151,9 @@ func schema(resource: Resource, spec: Dictionary, metadata: Dictionary) -> void:
 			"create_supported": reason.is_empty(),
 			"unsupported_reason": reason,
 			"resource_constraints": resource_constraints(property),
-			"accepted_inputs":["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_OBJECT else(["scalar"] if reason.is_empty() else[]),
+			"element_constraints": resource_constraints(property.element) if property.has("element") else [],
+			"element_accepted_inputs": ["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_ARRAY else [],
+			"accepted_inputs":["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_OBJECT else(["array"] if reason.is_empty() and int(property.type) == TYPE_ARRAY else (["scalar"] if reason.is_empty() else[])),
 		})
 	print(PREFIX + JSON.stringify({ "status": "schema", "type": resource.get_class(), "script": spec.get("script"), "executes_constructors_and_getters": true, "fields": fields, "integer_min": -9007199254740991, "integer_max": 9007199254740991, "max_resource_depth": MAX_DEPTH }))
 	quit()
@@ -212,22 +229,60 @@ func check_requested(resource: Resource, expected: Dictionary, path: String, sta
 		var descriptor: Dictionary = expected[field]
 		var actual: Variant = resource.get(field)
 		var location := field_path(path, field)
-		if descriptor.kind == "scalar":
-			if descriptor.value == null and actual == null: continue
-			if typeof(actual) != typeof(descriptor.value) or actual != descriptor.value:
-				fail(stage, "Value differs from requested value", location)
-				return false
-		else:
-			if not actual is Resource or (identity and actual != descriptor.value):
-				fail(stage, "Resource assignment changed requested object or rejected its script type", location)
-				return false
-			if descriptor.kind == "ref" and actual.resource_path != descriptor.path:
-				fail(stage, "External Resource reference changed path", location)
-				return false
-			var observed: Variant = snapshot(actual, "properties." + location if path.is_empty() else location)
-			if failed or not compare_snapshot(observed, descriptor.snapshot, "properties." + location if path.is_empty() else location, stage): return false
-			if descriptor.kind == "inline" and not check_requested(actual, descriptor.expected, "properties." + location if path.is_empty() else location, stage, identity): return false
+		if not check_value(actual, descriptor, "properties." + location if path.is_empty() and descriptor.kind != "scalar" else location, stage, identity): return false
 	return true
+
+
+func check_value(actual: Variant, descriptor: Dictionary, location: String, stage: String, identity: bool) -> bool:
+	if descriptor.kind == "array":
+		if not actual is Array or actual.size() != descriptor.entries.size():
+			fail(stage, "Array assignment changed requested entries", location)
+			return false
+		for index in descriptor.entries.size():
+			if not check_value(actual[index], descriptor.entries[index], location + "[%d]" % index, stage, identity): return false
+		return compare_snapshot(snapshot(actual, location), descriptor.snapshot, location, stage)
+	if descriptor.kind == "scalar":
+		if descriptor.value == null and actual == null: return true
+		if typeof(actual) != typeof(descriptor.value) or actual != descriptor.value:
+			fail(stage, "Value differs from requested value", location)
+			return false
+	else:
+		if not actual is Resource or (identity and actual != descriptor.value):
+			fail(stage, "Resource assignment changed requested object or rejected its script type", location)
+			return false
+		if descriptor.kind == "ref" and actual.resource_path != descriptor.path:
+			fail(stage, "External Resource reference changed path", location)
+			return false
+		var observed: Variant = snapshot(actual, location)
+		if failed or not compare_snapshot(observed, descriptor.snapshot, location, stage): return false
+		if descriptor.kind == "inline" and not check_requested(actual, descriptor.expected, location, stage, identity): return false
+	return true
+
+
+func resource_input(value: Variant, property: Dictionary, location: String, depth: int, error_location: String = "") -> Dictionary:
+	var descriptor := { "kind": "scalar", "value": value }
+	if value == null: return descriptor
+	if error_location.is_empty(): error_location = location
+	if not value is Dictionary:
+		fail("validate", "Expected null, $ref, or $resource", error_location)
+		return {}
+	var nested_path := location
+	if value.has("$ref"):
+		var reference := ResourceLoader.load(str(value["$ref"]), "", ResourceLoader.CACHE_MODE_IGNORE_DEEP)
+		if reference == null:
+			fail("load", "Could not load referenced Resource", error_location)
+			return {}
+		descriptor = { "kind": "ref", "value": reference, "path": reference.resource_path, "snapshot": snapshot(reference, nested_path) }
+	else:
+		var child := build(value["$resource"], nested_path, depth + 1)
+		if failed: return {}
+		descriptor = { "kind": "inline", "value": child.resource, "expected": child.expected, "snapshot": snapshot(child.resource, nested_path) }
+	if failed: return {}
+	value = descriptor.value
+	if not accepts_resource(property, value):
+		fail("validate", "Resource does not satisfy declared class or script constraints: %s" % resource_constraints(property), error_location)
+		return {}
+	return descriptor
 
 
 func build(spec: Dictionary, path: String = "", depth: int = 0) -> Dictionary:
@@ -251,26 +306,24 @@ func build(spec: Dictionary, path: String = "", depth: int = 0) -> Dictionary:
 		var value: Variant = spec.properties[field]
 		var kind := int(property.type)
 		var descriptor := { "kind": "scalar", "value": value }
-		if kind == TYPE_OBJECT and value != null:
-			if not value is Dictionary:
-				fail("validate", "Expected null, $ref, or $resource", location)
+		if kind == TYPE_ARRAY:
+			if not value is Array:
+				fail("validate", "Expected an array of Resources", location)
 				return {}
-			var nested_path := "properties." + location if path.is_empty() else location
-			if value.has("$ref"):
-				var reference := ResourceLoader.load(str(value["$ref"]), "", ResourceLoader.CACHE_MODE_IGNORE_DEEP)
-				if reference == null:
-					fail("load", "Could not load referenced Resource", location)
-					return {}
-				descriptor = { "kind": "ref", "value": reference, "path": reference.resource_path, "snapshot": snapshot(reference, nested_path) }
-			else:
-				var child := build(value["$resource"], nested_path, depth + 1)
+			var entries := []
+			var array_path := "properties." + location if path.is_empty() else location
+			var template: Array = resource.get(field)
+			var typed := Array([], template.get_typed_builtin(), template.get_typed_class_name(), template.get_typed_script())
+			for index in value.size():
+				var entry := resource_input(value[index], property.element, array_path + "[%d]" % index, depth)
 				if failed: return {}
-				descriptor = { "kind": "inline", "value": child.resource, "expected": child.expected, "snapshot": snapshot(child.resource, nested_path) }
+				entries.append(entry)
+				typed.append(entry.value)
+			descriptor = { "kind": "array", "value": typed, "entries": entries, "snapshot": snapshot(typed, array_path) }
+		elif kind == TYPE_OBJECT and value != null:
+			descriptor = resource_input(value, property, "properties." + location if path.is_empty() else location, depth, location)
 			if failed: return {}
 			value = descriptor.value
-			if not accepts_resource(property, value):
-				fail("validate", "Resource does not satisfy declared class or script constraints: %s" % resource_constraints(property), location)
-				return {}
 		elif kind != TYPE_OBJECT:
 			if kind == TYPE_INT and value is float and is_finite(value) and value == floor(value) and abs(value) <= 9007199254740991.0:
 				value = int(value)

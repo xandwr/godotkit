@@ -121,23 +121,69 @@ fn validate_spec(
         } else {
             format!("{prefix}.properties.{name}")
         };
-        match value {
-            Value::Null | Value::Bool(_) | Value::String(_) => {},
-            Value::Number(number) => {
-                if (number.is_i64() || number.is_u64()) && number.as_f64().is_none_or(|v| v.abs() > 9_007_199_254_740_991.0) {
-                    return Err((field, "Integer exceeds exact JSON transport range".to_owned()));
+        validate_value(project, value, &field, depth)?;
+    }
+    Ok(())
+}
+
+fn validate_value(
+    project: &Path,
+    value: &Value,
+    field: &str,
+    depth: usize,
+) -> Result<(), (String, String)> {
+    let field = field.to_owned();
+    match value {
+        Value::Array(entries) => {
+            for (index, entry) in entries.iter().enumerate() {
+                let location = format!("{field}[{index}]");
+                if !entry.is_null() && !entry.is_object() {
+                    return Err((
+                        location,
+                        "Expected null, $ref, or $resource array entry".to_owned(),
+                    ));
                 }
-            },
-            Value::Object(object) if object.len() == 1 && object.contains_key("$ref") => {
-                let path = object["$ref"].as_str().ok_or_else(|| (field.clone(), "$ref must be a res:// path string".to_owned()))?;
-                local_path(project, path).map_err(|error| (field, error.to_string()))?;
-            },
-            Value::Object(object) if object.len() == 1 && object.contains_key("$resource") => {
-                let nested: Spec = serde_json::from_value(object["$resource"].clone()).map_err(|error| (field.clone(), error.to_string()))?;
-                let nested_prefix = if prefix.is_empty() { format!("properties.{field}") } else {field};
-                validate_spec(project, &nested, &nested_prefix, depth + 1)?;
-            },
-            _ => return Err((field, "Expected a scalar, null, $ref, or $resource; arrays and arbitrary objects are unsupported".to_owned())),
+                validate_value(project, entry, &location, depth)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::String(_) => {}
+        Value::Number(number) => {
+            if (number.is_i64() || number.is_u64())
+                && number
+                    .as_f64()
+                    .is_none_or(|v| v.abs() > 9_007_199_254_740_991.0)
+            {
+                return Err((
+                    field,
+                    "Integer exceeds exact JSON transport range".to_owned(),
+                ));
+            }
+        }
+        Value::Object(object) if object.len() == 1 && object.contains_key("$ref") => {
+            let path = object["$ref"].as_str().ok_or_else(|| {
+                (
+                    field.clone(),
+                    "$ref must be a res:// path string".to_owned(),
+                )
+            })?;
+            local_path(project, path).map_err(|error| (field, error.to_string()))?;
+        }
+        Value::Object(object) if object.len() == 1 && object.contains_key("$resource") => {
+            let nested: Spec = serde_json::from_value(object["$resource"].clone())
+                .map_err(|error| (field.clone(), error.to_string()))?;
+            let nested_prefix = if field.starts_with("properties.") {
+                field
+            } else {
+                format!("properties.{field}")
+            };
+            validate_spec(project, &nested, &nested_prefix, depth + 1)?;
+        }
+        _ => {
+            return Err((
+                field,
+                "Expected a scalar, null, $ref, or $resource; arbitrary objects are unsupported"
+                    .to_owned(),
+            ));
         }
     }
     Ok(())
