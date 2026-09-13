@@ -83,7 +83,7 @@ fn creates_verified_resources_and_preserves_destinations_on_failure() {
         (output.status.success(), result)
     };
     let (ok, native) = run(
-        json!({"class":"StandardMaterial3D","properties":{"metallic":0.5,"resource_name":"Native"}}),
+        json!({"class":"StandardMaterial3D","properties":{"metallic":0.5,"resource_name":"Native","next_pass":null}}),
         "res://native.tres",
     );
     assert!(ok, "{native}");
@@ -141,7 +141,7 @@ fn creates_verified_resources_and_preserves_destinations_on_failure() {
         (
             json!({"class":"Resource","script":"res://weapon.gd","properties":{}}),
             "",
-            "prepare",
+            "validate",
         ),
         (
             json!({"class":"Resource","properties":{"nested":{}}}),
@@ -297,6 +297,15 @@ fn discovers_instance_defaults_hints_and_creation_support() {
     assert_eq!(field("large")["default"]["encoding"], "godot");
     assert_eq!(field("target")["default"]["value"], Value::Null);
     assert_eq!(field("target")["class_name"], "Resource");
+    assert_eq!(field("target")["create_supported"], true);
+    assert_eq!(
+        field("target")["accepted_inputs"],
+        json!(["null", "$ref", "$resource"])
+    );
+    assert_eq!(
+        field("target")["resource_constraints"],
+        json!([{"class":"Resource", "script":null}])
+    );
     assert_eq!(
         field("child")["default"],
         json!({"encoding":"resource", "value":{"path":"", "type":"Resource", "script":null}})
@@ -304,14 +313,7 @@ fn discovers_instance_defaults_hints_and_creation_support() {
     assert_eq!(field("transient")["storage"], false);
     assert_eq!(field("inherited")["storage"], true);
     assert_eq!(field("inherited")["editor_visible"], true);
-    for name in [
-        "offset",
-        "items",
-        "target",
-        "script",
-        "resource_path",
-        "transient",
-    ] {
+    for name in ["offset", "items", "script", "resource_path", "transient"] {
         assert_eq!(field(name)["create_supported"], false, "{name}");
         assert!(
             !field(name)["unsupported_reason"]
@@ -374,6 +376,230 @@ fn discovers_instance_defaults_hints_and_creation_support() {
         let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
         assert_eq!(failed["status"], "error");
     }
+    assert!(!fs::read_dir(&directory).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".gdkit-resource-")
+    }));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
+fn creates_nested_resources_and_verifies_external_references() {
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::env::temp_dir().join(format!(
+        "gdkit-nested-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(directory.join("stats.gd"), "class_name NestedStats extends Resource\n@export var damage: int = 3\n@export var child: Resource\n").unwrap();
+    fs::write(
+        directory.join("derived.gd"),
+        "extends NestedStats\n@export var bonus: int = 1\n",
+    )
+    .unwrap();
+    fs::write(directory.join("weapon.gd"), "extends Resource\n@export var stats: NestedStats\n@export var icon: Texture2D\n@export var any: Resource\n").unwrap();
+    fs::write(directory.join("mutator.gd"), "extends Resource\n@export var stats: NestedStats:\n\tset(value):\n\t\tstats = value\n\t\tif stats != null:\n\t\t\tstats.damage = 99\n").unwrap();
+    fs::write(
+        directory.join("cycle.gd"),
+        "extends Resource\n@export var loop: Resource\nfunc _init():\n\tloop = self\n",
+    )
+    .unwrap();
+    fs::write(directory.join("reload_child.gd"), "extends Resource\n@export var damage: int = 0:\n\tget:\n\t\treturn damage if resource_path.is_empty() else damage + 1\n").unwrap();
+    fs::write(directory.join("external.tres"), "[gd_resource type=\"Resource\" script_class=\"NestedStats\" load_steps=2 format=3]\n[ext_resource type=\"Script\" path=\"res://stats.gd\" id=\"1\"]\n[resource]\nscript = ExtResource(\"1\")\ndamage = 15\n").unwrap();
+    fs::write(directory.join("icon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\" fill=\"red\"/></svg>").unwrap();
+    let import = Command::new(&engine)
+        .args(["--headless", "--editor", "--path"])
+        .arg(&directory)
+        .args(["--import"])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&import.stderr).contains("SCRIPT ERROR:"));
+    let run = |spec: Value, out: &str| {
+        fs::write(
+            directory.join("spec.json"),
+            serde_json::to_vec(&spec).unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+            .current_dir(&directory)
+            .env_remove("GDKIT_GODOT")
+            .args([
+                "resource",
+                "create",
+                "--spec",
+                "spec.json",
+                "--out",
+                out,
+                "--output",
+                "json",
+                "--godot",
+            ])
+            .arg(&engine)
+            .output()
+            .unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "{error}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (output.status.success(), result)
+    };
+    let external = fs::read(directory.join("external.tres")).unwrap();
+    let icon = fs::read(directory.join("icon.svg")).unwrap();
+    let (ok, native) = run(
+        json!({"class":"StandardMaterial3D", "properties":{"next_pass":{"$resource":{"class":"StandardMaterial3D", "properties":{"metallic":0.5}}}}}),
+        "res://material.tres",
+    );
+    assert!(ok, "{native}");
+    let (ok, result) = run(
+        json!({"script":"res://weapon.gd", "properties": {
+            "stats":{"$resource":{"script":"res://derived.gd", "properties":{"damage":20,"bonus":4,"child":{"$resource":{"class":"Resource", "properties":{"resource_name":"Inner"}}}}}},
+            "icon":{"$ref":"res://icon.svg"}, "any":{"$ref":"res://external.tres"}
+        }}),
+        "res://nested.tres",
+    );
+    assert!(ok, "{result}");
+    assert_eq!(
+        result["properties"]["stats"]["$resource"]["properties"]["damage"],
+        20
+    );
+    let text = fs::read_to_string(directory.join("nested.tres")).unwrap();
+    assert!(text.contains("[sub_resource"));
+    assert!(text.contains("res://external.tres"));
+    assert!(text.contains("res://icon.svg"));
+    assert!(!text.contains(".gdkit-resource-"));
+    let (ok, result) = run(
+        json!({"script":"res://weapon.gd", "properties":{"stats":{"$ref":"res://external.tres"},"icon":null,"any":null}}),
+        "res://references.tres",
+    );
+    assert!(ok, "{result}");
+    let schema = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "resource",
+            "schema",
+            "--script",
+            "res://weapon.gd",
+            "--output",
+            "json",
+            "--godot",
+        ])
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(schema.status.success());
+    let schema: Value = serde_json::from_slice(&schema.stdout).unwrap();
+    let stats = schema["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "stats")
+        .unwrap();
+    assert_eq!(stats["create_supported"], true);
+    assert_eq!(
+        stats["resource_constraints"],
+        json!([{"class":"NestedStats", "script":"res://stats.gd"}])
+    );
+    for (spec, field, stage) in [
+        (
+            json!({"script":"res://weapon.gd","properties":{"stats":{"$resource":{"class":"Resource","properties":{}}}}}),
+            "stats",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"icon":{"$ref":"res://external.tres"}}}),
+            "icon",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"any":{"$ref":"res://missing.tres"}}}),
+            "any",
+            "load",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"any":{"$ref":"res://../escape.tres"}}}),
+            "any",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"any":{"$ref":"res://external.tres","extra":1}}}),
+            "any",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"stats":{"$resource":{"script":"res://stats.gd","properties":{"damage":"bad"}}}}}),
+            "properties.stats.properties.damage",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"stats":{"$resource":{"script":"res://stats.gd","properties":{"damage":9007199254740992_u64}}}}}),
+            "properties.stats.properties.damage",
+            "validate",
+        ),
+        (
+            json!({"script":"res://mutator.gd","properties":{"stats":{"$ref":"res://external.tres"}}}),
+            "properties.stats.properties.damage",
+            "assign",
+        ),
+        (
+            json!({"script":"res://mutator.gd","properties":{"stats":{"$resource":{"script":"res://stats.gd","properties":{"damage":20}}}}}),
+            "properties.stats.properties.damage",
+            "assign",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"any":{"$resource":{"script":"res://reload_child.gd","properties":{"damage":5}}}}}),
+            "properties.any.properties.damage",
+            "verify",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"any":{"$resource":{"script":"res://cycle.gd","properties":{}}}}}),
+            "properties.any.properties.loop",
+            "validate",
+        ),
+        (
+            json!({"script":"res://weapon.gd","properties":{"any":[]}}),
+            "any",
+            "validate",
+        ),
+    ] {
+        let (ok, result) = run(spec, "res://failure.tres");
+        assert!(!ok, "{result}");
+        assert_eq!(result["field"], field, "{result}");
+        assert_eq!(result["stage"], stage, "{result}");
+        assert!(!directory.join("failure.tres").exists());
+        assert_eq!(fs::read(directory.join("external.tres")).unwrap(), external);
+        assert_eq!(fs::read(directory.join("icon.svg")).unwrap(), icon);
+    }
+    let mut deep = json!({"script":"res://stats.gd","properties":{}});
+    for _ in 0..17 {
+        deep = json!({"script":"res://stats.gd","properties":{"child":{"$resource":deep}}});
+    }
+    let (ok, result) = run(deep, "res://deep.tres");
+    assert!(!ok, "{result}");
+    assert!(
+        result["message"]
+            .as_str()
+            .unwrap()
+            .contains("nesting exceeds")
+    );
+    assert!(!directory.join("deep.tres").exists());
     assert!(!fs::read_dir(&directory).unwrap().any(|entry| {
         entry
             .unwrap()

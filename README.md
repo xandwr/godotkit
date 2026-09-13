@@ -117,9 +117,9 @@ operation executes project constructors, getters, and setters without entering
 the main scene. Existing project dependencies must be importable; refresh stale
 script-class or asset caches with `gdkit cache refresh` when necessary.
 
-Properties must be writable, serialized booleans, integers, floats, or strings.
-Unknown fields, transient fields, resource references, and compound values fail
-explicitly. Integer input is limited to the exact JSON transport range of
+Properties must be writable, serialized booleans, integers, floats, strings, or
+Resource-valued fields. Unknown fields, transient fields, arrays, dictionaries,
+and other compound input values fail explicitly. Integer input is limited to the exact JSON transport range of
 plus or minus 9007199254740991. Values are checked after assignment and again
 after Godot saves and reloads the staged `.tres` without its instance cache.
 Setter transformations and serialization precision changes fail verification.
@@ -134,6 +134,41 @@ verified `properties`; errors return `status`, `stage`, `field`, and `message`,
 with engine diagnostics when available. Creation failures exit 1. The returned
 `res://` path is a persistent reference, not a live editor object handle.
 
+Resource-valued fields accept null, an existing project-local reference, or an
+inline Resource spec:
+
+```json
+{
+  "script": "res://resources/weapon_definition.gd",
+  "properties": {
+    "icon": { "$ref": "res://textures/shotgun.svg" },
+    "stats": {
+      "$resource": {
+        "script": "res://resources/weapon_stats.gd",
+        "properties": { "damage": 15 }
+      }
+    }
+  }
+}
+```
+
+Each directive contains exactly one key. Inline specs use the same class/script
+and property rules as the root. Godot saves inline objects as subresources and
+existing references as external resources; gdkit does not save referenced files.
+Native and registered script constraints are checked before assignment, including
+inherited script types. Godot also checks assignment types, including anonymous
+script types that reflection may describe only by their native or global base.
+
+Verification checks referenced paths and snapshots serialized fields throughout
+the graph, including defaults, after assignment, saving, and a reload that
+bypasses dependency caches. A setter that mutates a supplied nested or referenced
+object fails creation. Nested errors identify fields such as
+`properties.stats.properties.damage`; root field errors retain their existing
+names. Cyclic graphs, more than 16 nested Resources, and serialized container
+graphs deeper than 16 are rejected. Compound serialized dictionary keys and
+non-Resource serialized objects are also unsupported. Arrays of Resources and
+shared inline-object identities remain outside the input format.
+
 `gdkit resource schema --class StandardMaterial3D --output json` discovers
 instance fields using the configured engine. For a custom Resource, use
 `gdkit resource schema --script res://resources/weapon_definition.gd --output json`.
@@ -146,8 +181,12 @@ JSON results have `status: "schema"`, native `type`, optional `script`,
 `executes_constructors_and_getters: true`, `integer_min`, `integer_max`, and
 `fields`. Each field contains `name`, `type`, `type_id`, `class_name`, instance
 `default`, raw `hint` and `hint_string`, decoded `enum_choices`, raw `usage`,
-`storage`, `read_only`, `editor_visible`, `create_supported`, and an
-`unsupported_reason`. Inspector group/category entries are omitted. Enum choices
+`storage`, `read_only`, `editor_visible`, `create_supported`, an
+`unsupported_reason`, `accepted_inputs`, and `resource_constraints`. Resource
+constraints contain native/global `class` and a registered `script` path when
+available. Supported Resource fields list `null`, `$ref`, and `$resource` as
+accepted inputs. Results also include `max_resource_depth`. Inspector
+group/category entries are omitted. Enum choices
 contain `name` and `value`, including explicit integer enum values. Hints describe
 editor controls; setters and reload verification still determine creation success.
 
@@ -155,7 +194,8 @@ Defaults carry an `encoding` and `value`: `json` for transportable scalar values
 and null; `resource` for a descriptive path/type/script reference; `godot` for
 Godot text describing other values, including compound or out-of-range defaults.
 An empty resource path denotes an unsaved resource. Descriptive defaults are not
-creation inputs. `create_supported` describes the field's type and usage, so
+creation inputs; use `$ref` or `$resource` explicitly for a Resource default.
+`create_supported` describes the field's type and usage, so
 agents must also check a default's encoding and the integer limits before using
 it in a spec. Defaults reflect a newly constructed instance, including constructor
 changes. Failures use creation's error format and exit 1; selector errors exit 2.

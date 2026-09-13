@@ -86,25 +86,8 @@ fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
     }
     let text = fs::read_to_string(&args.spec)?;
     let spec: Spec = serde_json::from_str(&text)?;
-    validate_type(&project, &spec.class, &spec.script)?;
-    for (field, value) in &spec.properties {
-        if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
-            return Ok(
-                json!({"status": "error", "stage": "validate", "field": field,
-                "message": "Only boolean, integer, float, and string values are supported"}),
-            );
-        }
-        if let Some(number) = value.as_number()
-            && (number.is_i64() || number.is_u64())
-            && number
-                .as_f64()
-                .is_none_or(|v| v.abs() > 9_007_199_254_740_991.0)
-        {
-            return Ok(
-                json!({"status": "error", "stage": "validate", "field": field,
-                "message": "Integer exceeds exact JSON transport range"}),
-            );
-        }
+    if let Err((field, message)) = validate_spec(&project, &spec, "", 0) {
+        return Ok(json!({"status":"error", "stage":"validate", "field":field, "message":message}));
     }
     let (workspace, mut result) = worker(&project, args.godot.as_deref(), parent, &text, "create")?;
     if result["status"] != "created" {
@@ -116,6 +99,48 @@ fn create(args: ResourceCreateArgs) -> Result<Value, Box<dyn Error>> {
     }
     result["path"] = json!(args.out);
     Ok(result)
+}
+
+fn validate_spec(
+    project: &Path,
+    spec: &Spec,
+    prefix: &str,
+    depth: usize,
+) -> Result<(), (String, String)> {
+    if depth > 16 {
+        return Err((
+            prefix.to_owned(),
+            "Resource nesting exceeds limit of 16".to_owned(),
+        ));
+    }
+    validate_type(project, &spec.class, &spec.script)
+        .map_err(|error| (prefix.to_owned(), error.to_string()))?;
+    for (name, value) in &spec.properties {
+        let field = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.properties.{name}")
+        };
+        match value {
+            Value::Null | Value::Bool(_) | Value::String(_) => {},
+            Value::Number(number) => {
+                if (number.is_i64() || number.is_u64()) && number.as_f64().is_none_or(|v| v.abs() > 9_007_199_254_740_991.0) {
+                    return Err((field, "Integer exceeds exact JSON transport range".to_owned()));
+                }
+            },
+            Value::Object(object) if object.len() == 1 && object.contains_key("$ref") => {
+                let path = object["$ref"].as_str().ok_or_else(|| (field.clone(), "$ref must be a res:// path string".to_owned()))?;
+                local_path(project, path).map_err(|error| (field, error.to_string()))?;
+            },
+            Value::Object(object) if object.len() == 1 && object.contains_key("$resource") => {
+                let nested: Spec = serde_json::from_value(object["$resource"].clone()).map_err(|error| (field.clone(), error.to_string()))?;
+                let nested_prefix = if prefix.is_empty() { format!("properties.{field}") } else {field};
+                validate_spec(project, &nested, &nested_prefix, depth + 1)?;
+            },
+            _ => return Err((field, "Expected a scalar, null, $ref, or $resource; arrays and arbitrary objects are unsupported".to_owned())),
+        }
+    }
+    Ok(())
 }
 
 fn schema(args: ResourceSchemaArgs) -> Result<Value, Box<dyn Error>> {
