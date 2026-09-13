@@ -164,7 +164,20 @@ fn validate_value(
                 ));
             }
         }
-        Value::Object(object) if object.len() == 1 && object.contains_key("$variant") => {}
+        Value::Object(object) if object.len() == 1 && object.contains_key("$variant") => {
+            if let Some(components) = object["$variant"]["value"].as_array() {
+                for (index, component) in components.iter().enumerate() {
+                    if component.is_number() {
+                        validate_value(
+                            project,
+                            component,
+                            &format!("{field}.$variant.value[{index}]"),
+                            depth,
+                        )?;
+                    }
+                }
+            }
+        }
         Value::Object(object) if object.len() == 1 && object.contains_key("$ref") => {
             let path = object["$ref"].as_str().ok_or_else(|| {
                 (

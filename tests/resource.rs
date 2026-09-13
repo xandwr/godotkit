@@ -292,7 +292,10 @@ fn discovers_instance_defaults_hints_and_creation_support() {
             .unwrap()
             .contains("0.05")
     );
-    assert_eq!(field("offset")["default"]["encoding"], "godot");
+    assert_eq!(
+        field("offset")["default"],
+        json!({"encoding":"tagged","value":{"$variant":{"type":"Vector3","value":[1.0,2.0,3.0]}}})
+    );
     assert_eq!(field("items")["default"]["encoding"], "godot");
     assert_eq!(
         field("large")["default"],
@@ -316,7 +319,7 @@ fn discovers_instance_defaults_hints_and_creation_support() {
     assert_eq!(field("transient")["storage"], false);
     assert_eq!(field("inherited")["storage"], true);
     assert_eq!(field("inherited")["editor_visible"], true);
-    for name in ["offset", "items", "script", "resource_path", "transient"] {
+    for name in ["items", "script", "resource_path", "transient"] {
         assert_eq!(field(name)["create_supported"], false, "{name}");
         assert!(
             !field(name)["unsupported_reason"]
@@ -902,5 +905,264 @@ fn tagged_scalars_round_trip_exactly_and_expose_reusable_defaults() {
     assert_eq!(result["stage"], "assign");
     assert_eq!(result["field"], "clamped");
     assert!(!directory.join("failure.tres").exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
+fn tagged_vectors_and_colors_preserve_components_and_reject_loss() {
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::env::temp_dir().join(format!(
+        "gdkit-components-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(directory.join("math.gd"), "extends Resource\n@export var v2: Vector2 = Vector2(0.1, 0.2)\n@export var v3: Vector3 = Vector3(1, 2, 3)\n@export var v4: Vector4 = Vector4(1, 2, 3, 4)\n@export var i2: Vector2i = Vector2i(1, 2)\n@export var i3: Vector3i = Vector3i(1, 2, 3)\n@export var i4: Vector4i = Vector4i(1, 2, 3, 4)\n@export var color: Color = Color(0.1, 0.2, 0.3, 0.4)\n@export var child: Resource\n@export var clamped: Vector2 = Vector2.ZERO:\n\tset(new_value):\n\t\tclamped = new_value.limit_length(1)\n").unwrap();
+    let run = |spec: Value, destination: &str| {
+        fs::write(
+            directory.join("spec.json"),
+            serde_json::to_vec(&spec).unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+            .current_dir(&directory)
+            .env_remove("GDKIT_GODOT")
+            .args([
+                "resource",
+                "create",
+                "--spec",
+                "spec.json",
+                "--out",
+                destination,
+                "--output",
+                "json",
+                "--godot",
+            ])
+            .arg(&engine)
+            .output()
+            .unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "{error}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (output.status.success(), result)
+    };
+    let tag = |kind: &str, value: Value| json!({"$variant":{"type":kind,"value":value}});
+    let properties = json!({"v2":tag("Vector2", json!([1.5,-2.25])),"v3":tag("Vector3", json!([1.5,-2.25,3.125])),"v4":tag("Vector4", json!([1.5,-2.25,3.125,4.5])),"i2":tag("Vector2i", json!([-2147483648,2147483647])),"i3":tag("Vector3i", json!([-2147483648,0,2147483647])),"i4":tag("Vector4i", json!([-2147483648,0,-1,2147483647])),"color":tag("Color", json!([2.0,-0.5,0.75,0.25]))});
+    let (ok, result) = run(
+        json!({"script":"res://math.gd","properties":properties}),
+        "res://math.tres",
+    );
+    assert!(ok, "{result}");
+    assert_eq!(result["properties"], properties);
+    let (ok, result) = run(
+        json!({"class":"StandardMaterial3D","properties":{"albedo_color":tag("Color",json!([0.5,0.25,0.75,1.0]))}}),
+        "res://material.tres",
+    );
+    assert!(ok, "{result}");
+    let schema = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "resource",
+            "schema",
+            "--script",
+            "res://math.gd",
+            "--output",
+            "json",
+            "--godot",
+        ])
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(
+        schema.status.success(),
+        "{}",
+        String::from_utf8_lossy(&schema.stderr)
+    );
+    let schema: Value = serde_json::from_slice(&schema.stdout).unwrap();
+    let fields = schema["fields"].as_array().unwrap();
+    for (name, kind, length) in [
+        ("v2", "Vector2", 2),
+        ("v3", "Vector3", 3),
+        ("v4", "Vector4", 4),
+        ("i2", "Vector2i", 2),
+        ("i3", "Vector3i", 3),
+        ("i4", "Vector4i", 4),
+        ("color", "Color", 4),
+    ] {
+        let field = fields.iter().find(|field| field["name"] == name).unwrap();
+        assert_eq!(field["create_supported"], true);
+        assert_eq!(field["accepted_inputs"], json!(["$variant"]));
+        assert_eq!(field["default"]["encoding"], "tagged");
+        assert_eq!(field["variant_contract"]["type"], kind);
+        assert_eq!(field["variant_contract"]["value_encoding"], "array");
+        assert_eq!(field["variant_contract"]["length"], length);
+        assert_eq!(field["variant_contract"]["exact_components"], true);
+    }
+    let defaults: serde_json::Map<String, Value> = fields
+        .iter()
+        .filter(|field| {
+            field["create_supported"] == true
+                && ["json", "tagged"].contains(&field["default"]["encoding"].as_str().unwrap())
+        })
+        .map(|field| {
+            (
+                field["name"].as_str().unwrap().to_owned(),
+                field["default"]["value"].clone(),
+            )
+        })
+        .collect();
+    let (ok, result) = run(
+        json!({"script":"res://math.gd","properties":defaults}),
+        "res://defaults.tres",
+    );
+    assert!(ok, "{result}");
+    let (ok, result) = run(
+        json!({"script":"res://math.gd","properties":{"child":{"$resource":{"script":"res://math.gd","properties":properties}}}}),
+        "res://nested.tres",
+    );
+    assert!(ok, "{result}");
+    assert_eq!(
+        result["properties"]["child"]["$resource"]["properties"],
+        properties
+    );
+    fs::write(directory.join("probe.gd"), "extends SceneTree\nfunc _initialize():\n\tvar graph = load(\"res://math.tres\")\n\tassert(graph.v2 == Vector2(1.5, -2.25))\n\tassert(graph.v3 == Vector3(1.5, -2.25, 3.125))\n\tassert(graph.v4 == Vector4(1.5, -2.25, 3.125, 4.5))\n\tassert(graph.i2 == Vector2i(-2147483648, 2147483647))\n\tassert(graph.i3 == Vector3i(-2147483648, 0, 2147483647))\n\tassert(graph.i4 == Vector4i(-2147483648, 0, -1, 2147483647))\n\tassert(graph.color == Color(2, -0.5, 0.75, 0.25))\n\tquit()\n").unwrap();
+    let probe = Command::new(&engine)
+        .args(["--headless", "--path"])
+        .arg(&directory)
+        .args(["--script", "res://probe.gd"])
+        .output()
+        .unwrap();
+    assert!(probe.status.success());
+    assert!(
+        !String::from_utf8_lossy(&probe.stderr).contains("ERROR:"),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    for (name, value, field, stage) in [
+        ("v2", json!([1, 2]), "v2[0]", "validate"),
+        ("v2", tag("Vector2", json!([1])), "v2", "validate"),
+        ("v2", tag("Vector2", json!([1, 2, 3])), "v2", "validate"),
+        ("v2", tag("Vector3", json!([1, 2, 3])), "v2", "validate"),
+        (
+            "v2",
+            tag("Vector2", json!("Vector2(1,2)")),
+            "v2",
+            "validate",
+        ),
+        (
+            "v2",
+            tag("Vector2", json!([true, 2])),
+            "v2.$variant.value[0]",
+            "validate",
+        ),
+        (
+            "v2",
+            tag("Vector2", json!([null, 2])),
+            "v2.$variant.value[0]",
+            "validate",
+        ),
+        (
+            "v2",
+            tag("Vector2", json!([0.1, 2])),
+            "v2.$variant.value[0]",
+            "validate",
+        ),
+        (
+            "v2",
+            tag("Vector2", json!([9007199254740993_i64, 2])),
+            "v2.$variant.value[0]",
+            "validate",
+        ),
+        (
+            "v2",
+            tag("Vector2", json!([1e100, 2])),
+            "v2.$variant.value[0]",
+            "validate",
+        ),
+        (
+            "i2",
+            tag("Vector2i", json!([2147483648_i64, 2])),
+            "i2.$variant.value[0]",
+            "validate",
+        ),
+        (
+            "i2",
+            tag("Vector2i", json!([-2147483649_i64, 2])),
+            "i2.$variant.value[0]",
+            "validate",
+        ),
+        (
+            "i2",
+            tag("Vector2i", json!([1.5, 2])),
+            "i2.$variant.value[0]",
+            "validate",
+        ),
+        ("color", tag("Color", json!([1, 2, 3])), "color", "validate"),
+        (
+            "clamped",
+            tag("Vector2", json!([2.0, 0.0])),
+            "clamped",
+            "assign",
+        ),
+    ] {
+        let (ok, result) = run(
+            json!({"script":"res://math.gd","properties":{name:value}}),
+            "res://failure.tres",
+        );
+        assert!(!ok, "{result}");
+        assert_eq!(result["stage"], stage, "{result}");
+        assert_eq!(result["field"], field, "{result}");
+        assert!(!directory.join("failure.tres").exists());
+    }
+    let (ok, result) = run(
+        json!({"script":"res://math.gd","properties":{"child":{"$resource":{"script":"res://math.gd","properties":{"v3":tag("Vector3",json!([1,2,0.1]))}}}}}),
+        "res://failure.tres",
+    );
+    assert!(!ok, "{result}");
+    assert_eq!(result["stage"], "validate");
+    assert_eq!(
+        result["field"],
+        "properties.child.properties.v3.$variant.value[2]"
+    );
+    assert!(!directory.join("failure.tres").exists());
+    fs::write(
+        directory.join("nonfinite.gd"),
+        "extends Resource\n@export var offset: Vector2 = Vector2(INF, 0)\n",
+    )
+    .unwrap();
+    let schema = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "resource",
+            "schema",
+            "--script",
+            "res://nonfinite.gd",
+            "--output",
+            "json",
+            "--godot",
+        ])
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(schema.status.success());
+    let schema: Value = serde_json::from_slice(&schema.stdout).unwrap();
+    let offset = schema["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "offset")
+        .unwrap();
+    assert_eq!(offset["default"]["encoding"], "godot");
     fs::remove_dir_all(directory).unwrap();
 }

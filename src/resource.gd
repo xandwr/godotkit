@@ -2,7 +2,17 @@ extends SceneTree
 
 const PREFIX := "GDKIT_RESOURCE_RESULT:"
 const MAX_DEPTH := 16
-const VARIANT_TYPES := { "int": TYPE_INT, "StringName": TYPE_STRING_NAME, "NodePath": TYPE_NODE_PATH }
+const VARIANT_TYPES := {
+	"int": TYPE_INT, "StringName": TYPE_STRING_NAME, "NodePath": TYPE_NODE_PATH,
+	"Vector2": TYPE_VECTOR2, "Vector3": TYPE_VECTOR3, "Vector4": TYPE_VECTOR4,
+	"Vector2i": TYPE_VECTOR2I, "Vector3i": TYPE_VECTOR3I, "Vector4i": TYPE_VECTOR4I,
+	"Color": TYPE_COLOR,
+}
+const VARIANT_COMPONENTS := {
+	TYPE_VECTOR2: ["x", "y"], TYPE_VECTOR3: ["x", "y", "z"], TYPE_VECTOR4: ["x", "y", "z", "w"],
+	TYPE_VECTOR2I: ["x", "y"], TYPE_VECTOR3I: ["x", "y", "z"], TYPE_VECTOR4I: ["x", "y", "z", "w"],
+	TYPE_COLOR: ["r", "g", "b", "a"],
+}
 
 var failed := false
 
@@ -50,7 +60,7 @@ func unsupported_reason(property: Dictionary) -> String:
 	elif int(property.type) == TYPE_ARRAY:
 		if not property.has("element") or resource_constraints(property.element).is_empty():
 			return "Array must declare a Resource element type"
-	elif int(property.type) not in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH]:
+	elif int(property.type) not in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING] and variant_contract(int(property.type)).is_empty():
 		return "Only scalar and Resource fields are supported"
 	return ""
 
@@ -106,6 +116,15 @@ func variant_contract(kind: int) -> Dictionary:
 	for tag: String in VARIANT_TYPES:
 		if VARIANT_TYPES[tag] == kind:
 			var contract := { "tag": "$variant", "type": tag, "value_encoding": "string" }
+			if VARIANT_COMPONENTS.has(kind):
+				contract["value_encoding"] = "array"
+				contract["components"] = VARIANT_COMPONENTS[kind]
+				contract["length"] = VARIANT_COMPONENTS[kind].size()
+				contract["component_type"] = "integer" if kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I] else "finite number"
+				contract["exact_components"] = true
+				if kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I]:
+					contract["component_minimum"] = -2147483648
+					contract["component_maximum"] = 2147483647
 			if kind == TYPE_INT:
 				contract["minimum"] = "-9223372036854775808"
 				contract["maximum"] = "9223372036854775807"
@@ -115,7 +134,13 @@ func variant_contract(kind: int) -> Dictionary:
 
 
 func encode_variant(value: Variant) -> Dictionary:
-	return { "$variant": { "type": variant_contract(typeof(value)).type, "value": str(value) } }
+	var kind := typeof(value)
+	var payload: Variant = str(value)
+	if VARIANT_COMPONENTS.has(kind):
+		payload = []
+		for index in VARIANT_COMPONENTS[kind].size():
+			payload.append(value[index])
+	return { "$variant": { "type": variant_contract(kind).type, "value": payload } }
 
 
 func decode_variant(value: Dictionary, kind: int, location: String) -> Variant:
@@ -126,6 +151,8 @@ func decode_variant(value: Dictionary, kind: int, location: String) -> Variant:
 	if not tagged.type is String or not VARIANT_TYPES.has(tagged.type) or VARIANT_TYPES[tagged.type] != kind:
 		fail("validate", "Variant tag must match the declared property type", location)
 		return null
+	if VARIANT_COMPONENTS.has(kind):
+		return decode_components(tagged.value, kind, location)
 	if not tagged.value is String:
 		fail("validate", "Tagged scalar value must be a string", location)
 		return null
@@ -147,13 +174,52 @@ func decode_variant(value: Dictionary, kind: int, location: String) -> Variant:
 	return null
 
 
+func decode_components(payload: Variant, kind: int, location: String) -> Variant:
+	var contract := variant_contract(kind)
+	if not payload is Array or payload.size() != contract.length:
+		fail("validate", "Expected %d tagged components" % contract.length, location)
+		return null
+	var components := []
+	var integer_components := kind in [TYPE_VECTOR2I, TYPE_VECTOR3I, TYPE_VECTOR4I]
+	for index in payload.size():
+		var component: Variant = payload[index]
+		var component_path := location + ".$variant.value[%d]" % index
+		if typeof(component) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(component)):
+			fail("validate", "Expected a finite numeric component", component_path)
+			return null
+		if integer_components:
+			if component < -2147483648 or component > 2147483647 or component != floor(component):
+				fail("validate", "Expected a signed 32-bit integer component", component_path)
+				return null
+			component = int(component)
+		components.append(component)
+	var result: Variant
+	match kind:
+		TYPE_VECTOR2: result = Vector2(components[0], components[1])
+		TYPE_VECTOR3: result = Vector3(components[0], components[1], components[2])
+		TYPE_VECTOR4: result = Vector4(components[0], components[1], components[2], components[3])
+		TYPE_VECTOR2I: result = Vector2i(components[0], components[1])
+		TYPE_VECTOR3I: result = Vector3i(components[0], components[1], components[2])
+		TYPE_VECTOR4I: result = Vector4i(components[0], components[1], components[2], components[3])
+		TYPE_COLOR: result = Color(components[0], components[1], components[2], components[3])
+	for index in components.size():
+		if result[index] != components[index]:
+			fail("validate", "Component cannot be represented exactly by the engine", location + ".$variant.value[%d]" % index)
+			return null
+	return result
+
+
 func default_value(value: Variant) -> Dictionary:
 	var kind := typeof(value)
 	if kind in [TYPE_NIL, TYPE_OBJECT] and value == null:
 		return { "encoding": "json", "value": null }
 	if kind in [TYPE_NIL, TYPE_BOOL, TYPE_STRING] or (kind == TYPE_INT and value >= -9007199254740991 and value <= 9007199254740991) or (kind == TYPE_FLOAT and is_finite(value)):
 		return { "encoding": "json", "value": value }
-	if kind in [TYPE_INT, TYPE_STRING_NAME, TYPE_NODE_PATH]:
+	if not variant_contract(kind).is_empty():
+		if VARIANT_COMPONENTS.has(kind):
+			for index in VARIANT_COMPONENTS[kind].size():
+				if not is_finite(float(value[index])):
+					return { "encoding": "godot", "value": var_to_str(value) }
 		return { "encoding": "tagged", "value": encode_variant(value) }
 	if value is Resource:
 		var script := value.get_script() as Script
@@ -214,7 +280,7 @@ func schema(resource: Resource, spec: Dictionary, metadata: Dictionary) -> void:
 			"element_accepted_inputs": ["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_ARRAY else [],
 			"accepted_inputs": accepted_inputs(property, reason),
 		})
-	print(PREFIX + JSON.stringify({ "status": "schema", "type": resource.get_class(), "script": spec.get("script"), "executes_constructors_and_getters": true, "fields": fields, "integer_min": -9007199254740991, "integer_max": 9007199254740991, "max_resource_depth": MAX_DEPTH, "variant_codec_version": 1 }))
+	print(PREFIX + JSON.stringify({ "status": "schema", "type": resource.get_class(), "script": spec.get("script"), "executes_constructors_and_getters": true, "fields": fields, "integer_min": -9007199254740991, "integer_max": 9007199254740991, "max_resource_depth": MAX_DEPTH, "variant_codec_version": 1 }, "", true, true))
 	quit()
 
 
@@ -387,7 +453,7 @@ func build(spec: Dictionary, path: String = "", depth: int = 0) -> Dictionary:
 			if value is Dictionary:
 				value = decode_variant(value, kind, location)
 				if failed: return {}
-			elif kind in [TYPE_STRING_NAME, TYPE_NODE_PATH]:
+			elif kind != TYPE_INT and not variant_contract(kind).is_empty():
 				fail("validate", "Expected an explicit $variant tag", location)
 				return {}
 			if kind == TYPE_INT and value is float and is_finite(value) and value == floor(value) and abs(value) <= 9007199254740991.0:
@@ -432,5 +498,5 @@ func _initialize() -> void:
 	if not check_requested(reloaded, graph.expected, "", "verify", false): return
 	var reloaded_observation: Variant = snapshot(reloaded, "")
 	if failed or not compare_snapshot(reloaded_observation, baseline, "", "verify"): return
-	print(PREFIX + JSON.stringify({ "status": "created", "type": resource.get_class(), "script": spec.get("script"), "properties": spec.properties }))
+	print(PREFIX + JSON.stringify({ "status": "created", "type": resource.get_class(), "script": spec.get("script"), "properties": spec.properties }, "", true, true))
 	quit()
