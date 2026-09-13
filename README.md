@@ -96,6 +96,44 @@ reflection implementation, project feature settings, enabled extension lists,
 extension descriptors, and their referenced native library metadata. As with
 `check`, `--godot` overrides `GDKIT_GODOT`, which overrides `gdkit.toml`.
 
+`gdkit resource create --spec weapon.json --out res://weapons/shotgun.tres`
+creates a new Resource using the configured engine. The destination's parent
+directory must already exist. A spec selects exactly one native `class` or
+project-local GDScript `script`, and supplies a `properties` object:
+
+```json
+{
+  "script": "res://resources/weapon_definition.gd",
+  "properties": {
+    "damage": 15,
+    "display_name": "Shotgun"
+  }
+}
+```
+
+Native types use `"class": "StandardMaterial3D"` instead of `script`. Scripts
+must instantiate a Resource without required constructor arguments. This
+operation executes project constructors, getters, and setters without entering
+the main scene. Existing project dependencies must be importable; refresh stale
+script-class or asset caches with `gdkit cache refresh` when necessary.
+
+Properties must be writable, serialized booleans, integers, floats, or strings.
+Unknown fields, transient fields, resource references, and compound values fail
+explicitly. Integer input is limited to the exact JSON transport range of
+plus or minus 9007199254740991. Values are checked after assignment and again
+after Godot saves and reloads the staged `.tres` without its instance cache.
+Setter transformations and serialization precision changes fail verification.
+Unspecified fields retain engine or script defaults.
+
+The verified file is published without overwriting an existing destination;
+failed operations remove their staging directory. Publication uses a hard link
+within the destination filesystem and fails if that filesystem does not support
+hard links. `--project` and `--godot` use the normal engine selection rules.
+`--output json` returns `status`, `path`, native `type`, optional `script`, and
+verified `properties`; errors return `status`, `stage`, `field`, and `message`,
+with engine diagnostics when available. Creation failures exit 1. The returned
+`res://` path is a persistent reference, not a live editor object handle.
+
 `gdkit net [project]` prints the project's authored multiplayer topology without
 entering its main scene. It asks the selected engine for effective GDScript RPC
 configuration, then combines that result with gdview source locations for RPC

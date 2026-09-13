@@ -8,6 +8,7 @@ mod import_worker;
 mod net;
 mod process;
 mod project_files;
+mod resource;
 mod runtime_probe;
 mod scenario;
 mod session;
@@ -177,6 +178,7 @@ fn main() -> ExitCode {
         Command::Cache(args) => cache::run(args),
         Command::Import(args) => cache::refresh(args),
         Command::Api(args) => api::run(args),
+        Command::Resource(args) => resource::run(args),
         Command::Autoloads(args) => autoloads(args),
         Command::Init(args) => engine::init(args),
         Command::Check(args) => check::run(args),

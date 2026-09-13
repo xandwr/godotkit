@@ -11,6 +11,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = "Construct serialized Godot resources")]
+    Resource(ResourceArgs),
     #[command(about = "Refresh and manage Godot project caches")]
     Cache(CacheArgs),
     #[command(about = "Refresh Godot project caches (alias for cache refresh)")]
@@ -409,4 +411,33 @@ pub struct FormatProjectArgs {
     pub check: bool,
     #[arg(long, default_value = "100", value_parser = clap::value_parser!(u16).range(1..), help = "Maximum width of compact guards")]
     pub line_width: u16,
+}
+
+#[derive(Debug, Args)]
+pub struct ResourceArgs {
+    #[command(subcommand)]
+    pub command: ResourceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResourceCommand {
+    #[command(about = "Create and verify a new serialized Resource using Godot")]
+    Create(ResourceCreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResourceCreateArgs {
+    #[arg(
+        long,
+        help = "JSON specification containing class or script and properties"
+    )]
+    pub spec: PathBuf,
+    #[arg(long, help = "New project-local res:// path ending in .tres")]
+    pub out: String,
+    #[arg(long, default_value = ".")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH")]
+    pub godot: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "human")]
+    pub output: NetOutput,
 }
