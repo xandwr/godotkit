@@ -296,7 +296,7 @@ fn discovers_instance_defaults_hints_and_creation_support() {
         field("offset")["default"],
         json!({"encoding":"tagged","value":{"$variant":{"type":"Vector3","value":[1.0,2.0,3.0]}}})
     );
-    assert_eq!(field("items")["default"]["encoding"], "godot");
+    assert_eq!(field("items")["default"]["encoding"], "tagged");
     assert_eq!(
         field("large")["default"],
         json!({"encoding":"tagged","value":{"$variant":{"type":"int","value":"-9223372036854775808"}}})
@@ -319,7 +319,7 @@ fn discovers_instance_defaults_hints_and_creation_support() {
     assert_eq!(field("transient")["storage"], false);
     assert_eq!(field("inherited")["storage"], true);
     assert_eq!(field("inherited")["editor_visible"], true);
-    for name in ["items", "script", "resource_path", "transient"] {
+    for name in ["script", "resource_path", "transient"] {
         assert_eq!(field(name)["create_supported"], false, "{name}");
         assert!(
             !field(name)["unsupported_reason"]
@@ -576,6 +576,7 @@ fn creates_nested_resources_and_verifies_external_references() {
         .unwrap();
     assert_eq!(effects["create_supported"], true);
     assert_eq!(effects["accepted_inputs"], json!(["array"]));
+    assert_eq!(effects["variant_contract"], json!({}));
     assert_eq!(
         effects["element_accepted_inputs"],
         json!(["null", "$ref", "$resource"])

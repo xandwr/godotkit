@@ -7,6 +7,10 @@ const VARIANT_TYPES := {
 	"Vector2": TYPE_VECTOR2, "Vector3": TYPE_VECTOR3, "Vector4": TYPE_VECTOR4,
 	"Vector2i": TYPE_VECTOR2I, "Vector3i": TYPE_VECTOR3I, "Vector4i": TYPE_VECTOR4I,
 	"Color": TYPE_COLOR,
+	"Array": TYPE_ARRAY, "Dictionary": TYPE_DICTIONARY,
+	"PackedByteArray": TYPE_PACKED_BYTE_ARRAY, "PackedInt32Array": TYPE_PACKED_INT32_ARRAY, "PackedInt64Array": TYPE_PACKED_INT64_ARRAY,
+	"PackedFloat32Array": TYPE_PACKED_FLOAT32_ARRAY, "PackedFloat64Array": TYPE_PACKED_FLOAT64_ARRAY, "PackedStringArray": TYPE_PACKED_STRING_ARRAY,
+	"PackedVector2Array": TYPE_PACKED_VECTOR2_ARRAY, "PackedVector3Array": TYPE_PACKED_VECTOR3_ARRAY, "PackedVector4Array": TYPE_PACKED_VECTOR4_ARRAY, "PackedColorArray": TYPE_PACKED_COLOR_ARRAY,
 	"Rect2": TYPE_RECT2, "Rect2i": TYPE_RECT2I,
 	"Transform2D": TYPE_TRANSFORM2D, "Transform3D": TYPE_TRANSFORM3D,
 	"Quaternion": TYPE_QUATERNION, "Basis": TYPE_BASIS, "Plane": TYPE_PLANE, "AABB": TYPE_AABB,
@@ -23,6 +27,13 @@ const VARIANT_COMPONENTS := {
 	TYPE_QUATERNION: ["x", "y", "z", "w"],
 	TYPE_PLANE: ["normal.x", "normal.y", "normal.z", "d"],
 	TYPE_AABB: ["position.x", "position.y", "position.z", "size.x", "size.y", "size.z"],
+}
+
+const SCALAR_TYPES := { "bool": TYPE_BOOL, "float": TYPE_FLOAT, "String": TYPE_STRING }
+const PACKED_ELEMENTS := {
+	TYPE_PACKED_BYTE_ARRAY: TYPE_INT, TYPE_PACKED_INT32_ARRAY: TYPE_INT, TYPE_PACKED_INT64_ARRAY: TYPE_INT,
+	TYPE_PACKED_FLOAT32_ARRAY: TYPE_FLOAT, TYPE_PACKED_FLOAT64_ARRAY: TYPE_FLOAT, TYPE_PACKED_STRING_ARRAY: TYPE_STRING,
+	TYPE_PACKED_VECTOR2_ARRAY: TYPE_VECTOR2, TYPE_PACKED_VECTOR3_ARRAY: TYPE_VECTOR3, TYPE_PACKED_VECTOR4_ARRAY: TYPE_VECTOR4, TYPE_PACKED_COLOR_ARRAY: TYPE_COLOR,
 }
 
 var failed := false
@@ -69,8 +80,11 @@ func unsupported_reason(property: Dictionary) -> String:
 		if resource_constraints(property).is_empty():
 			return "Object field must declare a Resource type"
 	elif int(property.type) == TYPE_ARRAY:
-		if not property.has("element") or resource_constraints(property.element).is_empty():
-			return "Array must declare a Resource element type"
+		if not property.has("element") or (resource_constraints(property.element).is_empty() and not scalar_kind(int(property.element.type))):
+			return "Array must declare a supported scalar or Resource element type"
+	elif int(property.type) == TYPE_DICTIONARY:
+		if not property.has("key_type") or not scalar_kind(property.key_type) or not scalar_kind(property.value_type):
+			return "Dictionary must declare supported scalar key and value types"
 	elif int(property.type) not in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING] and variant_contract(int(property.type)).is_empty():
 		return "Only scalar and Resource fields are supported"
 	return ""
@@ -114,19 +128,86 @@ func property_metadata(resource: Resource) -> Dictionary:
 		if int(property.usage) & (PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP | PROPERTY_USAGE_CATEGORY) == 0:
 			if int(property.type) == TYPE_ARRAY:
 				var current: Variant = resource.get(property.name)
-				if current is Array and current.get_typed_builtin() == TYPE_OBJECT:
+				if current is Array and current.is_typed():
 					var element_script := current.get_typed_script() as Script
-					property["element"] = { "type": TYPE_OBJECT, "hint": PROPERTY_HINT_NONE, "hint_string": "", "class_name": current.get_typed_class_name() }
+					property["element"] = { "type": current.get_typed_builtin(), "hint": PROPERTY_HINT_NONE, "hint_string": "", "class_name": current.get_typed_class_name() }
 					if element_script != null:
 						property.element["element_script"] = element_script
+			elif int(property.type) == TYPE_DICTIONARY:
+				var current: Variant = resource.get(property.name)
+				if current is Dictionary:
+					property["key_type"] = current.get_typed_key_builtin()
+					property["value_type"] = current.get_typed_value_builtin()
 			metadata[property.name] = property
 	return metadata
+
+
+func scalar_kind(kind: int) -> bool:
+	return kind in SCALAR_TYPES.values() or (kind in VARIANT_TYPES.values() and kind not in [TYPE_ARRAY, TYPE_DICTIONARY] and not PACKED_ELEMENTS.has(kind))
+
+
+func scalar_name(kind: int) -> String:
+	for table: Dictionary in [SCALAR_TYPES, VARIANT_TYPES]:
+		for name: String in table:
+			if table[name] == kind: return name
+	return ""
+
+
+func scalar_input(value: Variant, kind: int, location: String) -> Variant:
+	if value is Dictionary:
+		return decode_variant(value, kind, location)
+	if kind == TYPE_INT and value is float and is_finite(value) and value == floor(value) and abs(value) <= 9007199254740991.0:
+		value = int(value)
+	elif kind == TYPE_FLOAT and typeof(value) == TYPE_INT:
+		value = float(value)
+	if typeof(value) != kind or (kind == TYPE_FLOAT and not is_finite(value)):
+		fail("validate", "Expected %s scalar" % scalar_name(kind), location)
+		return null
+	return value
+
+
+func scalar_output(value: Variant) -> Variant:
+	if typeof(value) == TYPE_INT and value >= -9007199254740991 and value <= 9007199254740991: return value
+	return encode_variant(value) if typeof(value) in VARIANT_TYPES.values() else value
+
+
+func scalar_contract(kind: int) -> Dictionary:
+	var contract := variant_contract(kind)
+	if contract.is_empty(): contract = { "type": scalar_name(kind) }
+	contract["accepted_inputs"] = ["scalar", "$variant"] if kind == TYPE_INT else (["$variant"] if kind in VARIANT_TYPES.values() else ["scalar"])
+	return contract
+
+
+func container_contract(property: Dictionary) -> Dictionary:
+	if int(property.type) == TYPE_ARRAY and (not property.has("element") or not scalar_kind(int(property.element.type))): return {}
+	if int(property.type) == TYPE_DICTIONARY and (not property.has("key_type") or not scalar_kind(property.key_type) or not scalar_kind(property.value_type)): return {}
+	var contract := variant_contract(int(property.type))
+	if int(property.type) == TYPE_ARRAY and property.has("element") and scalar_kind(int(property.element.type)):
+		contract["element_type"] = scalar_name(int(property.element.type))
+		contract["element_contract"] = scalar_contract(int(property.element.type))
+	elif int(property.type) == TYPE_DICTIONARY and property.has("key_type"):
+		contract["key_type"] = scalar_name(property.key_type)
+		contract["value_type"] = scalar_name(property.value_type)
+		contract["key_contract"] = scalar_contract(property.key_type)
+		contract["value_contract"] = scalar_contract(property.value_type)
+	return contract
 
 
 func variant_contract(kind: int) -> Dictionary:
 	for tag: String in VARIANT_TYPES:
 		if VARIANT_TYPES[tag] == kind:
 			var contract := { "tag": "$variant", "type": tag, "value_encoding": "string" }
+			if kind in [TYPE_ARRAY, TYPE_DICTIONARY]:
+				contract["value_encoding"] = "object"
+				contract["required_fields"] = ["element_type", "items"] if kind == TYPE_ARRAY else ["key_type", "value_type", "entries"]
+			elif PACKED_ELEMENTS.has(kind):
+				contract["value_encoding"] = "array"
+				contract["element_type"] = scalar_name(PACKED_ELEMENTS[kind])
+				contract["element_contract"] = scalar_contract(PACKED_ELEMENTS[kind])
+				contract["exact_elements"] = true
+				if kind in [TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY]:
+					contract["element_minimum"] = 0 if kind == TYPE_PACKED_BYTE_ARRAY else -2147483648
+					contract["element_maximum"] = 255 if kind == TYPE_PACKED_BYTE_ARRAY else 2147483647
 			if VARIANT_COMPONENTS.has(kind):
 				contract["value_encoding"] = "array"
 				contract["components"] = VARIANT_COMPONENTS[kind]
@@ -159,10 +240,21 @@ func encode_variant(value: Variant) -> Dictionary:
 	var payload: Variant = str(value)
 	if VARIANT_COMPONENTS.has(kind):
 		payload = component_values(value)
+	elif kind == TYPE_ARRAY:
+		var items := []
+		for item: Variant in value: items.append(scalar_output(item))
+		payload = { "element_type": scalar_name(value.get_typed_builtin()), "items": items }
+	elif kind == TYPE_DICTIONARY:
+		var entries := []
+		for key: Variant in value: entries.append([scalar_output(key), scalar_output(value[key])])
+		payload = { "key_type": scalar_name(value.get_typed_key_builtin()), "value_type": scalar_name(value.get_typed_value_builtin()), "entries": entries }
+	elif PACKED_ELEMENTS.has(kind):
+		payload = []
+		for item: Variant in value: payload.append(scalar_output(item))
 	return { "$variant": { "type": variant_contract(kind).type, "value": payload } }
 
 
-func decode_variant(value: Dictionary, kind: int, location: String) -> Variant:
+func decode_variant(value: Dictionary, kind: int, location: String, property: Dictionary = {}) -> Variant:
 	var tagged: Variant = value.get("$variant")
 	if value.size() != 1 or not tagged is Dictionary or tagged.size() != 2 or not tagged.has("type") or not tagged.has("value"):
 		fail("validate", "Expected $variant with exactly type and value", location)
@@ -170,6 +262,8 @@ func decode_variant(value: Dictionary, kind: int, location: String) -> Variant:
 	if not tagged.type is String or not VARIANT_TYPES.has(tagged.type) or VARIANT_TYPES[tagged.type] != kind:
 		fail("validate", "Variant tag must match the declared property type", location)
 		return null
+	if kind in [TYPE_ARRAY, TYPE_DICTIONARY] or PACKED_ELEMENTS.has(kind):
+		return decode_container(tagged.value, kind, location + ".$variant.value", property)
 	if VARIANT_COMPONENTS.has(kind):
 		return decode_components(tagged.value, kind, location)
 	if not tagged.value is String:
@@ -191,6 +285,70 @@ func decode_variant(value: Dictionary, kind: int, location: String) -> Variant:
 			if str(path_value) == text: return path_value
 	fail("validate", "Tagged value cannot be represented exactly", location)
 	return null
+
+
+func decode_container(payload: Variant, kind: int, location: String, property: Dictionary) -> Variant:
+	var result: Variant
+	if PACKED_ELEMENTS.has(kind):
+		if not payload is Array:
+			fail("validate", "Expected packed array entries", location)
+			return null
+		match kind:
+			TYPE_PACKED_BYTE_ARRAY: result = PackedByteArray()
+			TYPE_PACKED_INT32_ARRAY: result = PackedInt32Array()
+			TYPE_PACKED_INT64_ARRAY: result = PackedInt64Array()
+			TYPE_PACKED_FLOAT32_ARRAY: result = PackedFloat32Array()
+			TYPE_PACKED_FLOAT64_ARRAY: result = PackedFloat64Array()
+			TYPE_PACKED_STRING_ARRAY: result = PackedStringArray()
+			TYPE_PACKED_VECTOR2_ARRAY: result = PackedVector2Array()
+			TYPE_PACKED_VECTOR3_ARRAY: result = PackedVector3Array()
+			TYPE_PACKED_VECTOR4_ARRAY: result = PackedVector4Array()
+			TYPE_PACKED_COLOR_ARRAY: result = PackedColorArray()
+		for index in payload.size():
+			var entry_path := location + "[%d]" % index
+			var entry: Variant = scalar_input(payload[index], PACKED_ELEMENTS[kind], entry_path)
+			if failed: return null
+			var contract := variant_contract(kind)
+			if contract.has("element_minimum") and (entry < contract.element_minimum or entry > contract.element_maximum):
+				fail("validate", "Packed integer entry is outside its storage range", entry_path)
+				return null
+			result.append(entry)
+			if result[index] != entry:
+				fail("validate", "Packed entry cannot be represented exactly", entry_path)
+				return null
+		return result
+	if not payload is Dictionary:
+		fail("validate", "Expected typed container payload", location)
+		return null
+	if kind == TYPE_ARRAY:
+		if payload.size() != 2 or not payload.has("element_type") or not payload.has("items") or not payload.items is Array or not property.has("element") or payload.element_type != scalar_name(int(property.element.type)):
+			fail("validate", "Array payload must declare the property's scalar element_type and items", location)
+			return null
+		result = Array([], int(property.element.type), &"", null)
+		for index in payload.items.size():
+			var item: Variant = scalar_input(payload.items[index], int(property.element.type), location + ".items[%d]" % index)
+			if failed: return null
+			result.append(item)
+	else:
+		if payload.size() != 3 or not payload.has("key_type") or not payload.has("value_type") or not payload.has("entries") or not payload.entries is Array or not property.has("key_type") or payload.key_type != scalar_name(property.key_type) or payload.value_type != scalar_name(property.value_type):
+			fail("validate", "Dictionary payload must declare the property's scalar key_type, value_type, and entries", location)
+			return null
+		result = Dictionary({}, property.key_type, &"", null, property.value_type, &"", null)
+		for index in payload.entries.size():
+			var entry: Variant = payload.entries[index]
+			var entry_path := location + ".entries[%d]" % index
+			if not entry is Array or entry.size() != 2:
+				fail("validate", "Expected a dictionary [key, value] pair", entry_path)
+				return null
+			var key: Variant = scalar_input(entry[0], property.key_type, entry_path + "[0]")
+			if failed: return null
+			var item: Variant = scalar_input(entry[1], property.value_type, entry_path + "[1]")
+			if failed: return null
+			if result.has(key):
+				fail("validate", "Duplicate dictionary key", entry_path + "[0]")
+				return null
+			result[key] = item
+	return result
 
 
 func decode_components(payload: Variant, kind: int, location: String) -> Variant:
@@ -243,6 +401,16 @@ func default_value(value: Variant) -> Dictionary:
 		return { "encoding": "json", "value": null }
 	if kind in [TYPE_NIL, TYPE_BOOL, TYPE_STRING] or (kind == TYPE_INT and value >= -9007199254740991 and value <= 9007199254740991) or (kind == TYPE_FLOAT and is_finite(value)):
 		return { "encoding": "json", "value": value }
+	if kind == TYPE_ARRAY and (not value.is_typed() or not scalar_kind(value.get_typed_builtin())):
+		return { "encoding": "godot", "value": var_to_str(value) }
+	if kind == TYPE_DICTIONARY and (not scalar_kind(value.get_typed_key_builtin()) or not scalar_kind(value.get_typed_value_builtin())):
+		return { "encoding": "godot", "value": var_to_str(value) }
+	if kind == TYPE_ARRAY or PACKED_ELEMENTS.has(kind):
+		for item: Variant in value:
+			if default_value(item).encoding == "godot": return { "encoding": "godot", "value": var_to_str(value) }
+	elif kind == TYPE_DICTIONARY:
+		for key: Variant in value:
+			if default_value(key).encoding == "godot" or default_value(value[key]).encoding == "godot": return { "encoding": "godot", "value": var_to_str(value) }
 	if not variant_contract(kind).is_empty():
 		if VARIANT_COMPONENTS.has(kind):
 			for component: Variant in component_values(value):
@@ -276,7 +444,7 @@ func accepted_inputs(property: Dictionary, reason: String) -> Array:
 	if not reason.is_empty(): return []
 	match int(property.type):
 		TYPE_OBJECT: return ["null", "$ref", "$resource"]
-		TYPE_ARRAY: return ["array"]
+		TYPE_ARRAY: return ["$variant"] if scalar_kind(int(property.element.type)) else ["array"]
 		TYPE_INT: return ["scalar", "$variant"]
 	if not variant_contract(int(property.type)).is_empty(): return ["$variant"]
 	return ["scalar"]
@@ -302,10 +470,10 @@ func schema(resource: Resource, spec: Dictionary, metadata: Dictionary) -> void:
 			"editor_visible": int(property.usage) & PROPERTY_USAGE_EDITOR != 0,
 			"create_supported": reason.is_empty(),
 			"unsupported_reason": reason,
-			"variant_contract": variant_contract(int(property.type)),
+			"variant_contract": container_contract(property),
 			"resource_constraints": resource_constraints(property),
 			"element_constraints": resource_constraints(property.element) if property.has("element") else [],
-			"element_accepted_inputs": ["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_ARRAY else [],
+			"element_accepted_inputs": ["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_ARRAY and int(property.element.type) == TYPE_OBJECT else [],
 			"accepted_inputs": accepted_inputs(property, reason),
 		})
 	print(PREFIX + JSON.stringify({ "status": "schema", "type": resource.get_class(), "script": spec.get("script"), "executes_constructors_and_getters": true, "fields": fields, "integer_min": -9007199254740991, "integer_max": 9007199254740991, "max_resource_depth": MAX_DEPTH, "variant_codec_version": 1 }, "", true, true))
@@ -351,9 +519,13 @@ func snapshot(value: Variant, path: String, ancestors: Array = [], depth: int = 
 			if typeof(key) in [TYPE_OBJECT, TYPE_ARRAY, TYPE_DICTIONARY]:
 				fail("validate", "Compound serialized dictionary keys are unsupported", path)
 				return null
-			items[var_to_str(key)] = snapshot(value[key], path + "[%s]" % var_to_str(key), ancestors, depth + 1)
+			items[key] = snapshot(value[key], path + "[%s]" % var_to_str(key), ancestors, depth + 1)
 			if failed: return null
-		return { "kind": "dictionary", "items": items }
+		return { "kind": "dictionary", "key_builtin": value.get_typed_key_builtin(), "value_builtin": value.get_typed_value_builtin(), "key_class": str(value.get_typed_key_class_name()), "value_class": str(value.get_typed_value_class_name()), "key_script": value.get_typed_key_script().resource_path if value.get_typed_key_script() != null else null, "value_script": value.get_typed_value_script().resource_path if value.get_typed_value_script() != null else null, "items": items }
+	if PACKED_ELEMENTS.has(typeof(value)):
+		var items := []
+		for index in value.size(): items.append(snapshot(value[index], path + "[%d]" % index, ancestors, depth + 1))
+		return { "kind": typeof(value), "items": items }
 	if typeof(value) == TYPE_OBJECT:
 		fail("validate", "Serialized non-Resource objects are unsupported", path)
 		return null
@@ -368,8 +540,9 @@ func compare_snapshot(actual: Variant, expected: Variant, path: String, stage: S
 			var left: Variant = actual[key]
 			var right: Variant = expected[key]
 			if left is Dictionary and right is Dictionary and left.size() == right.size():
-				for field: String in right:
-					if left.has(field) and not compare_snapshot(left[field], right[field], field_path(path, field), stage): return false
+				for field: Variant in right:
+					var location := field_path(path, str(field)) if str(expected.kind) == "resource" else path + "[%s]" % var_to_str(field)
+					if left.has(field) and not compare_snapshot(left[field], right[field], location, stage): return false
 			elif left is Array and right is Array and left.size() == right.size():
 				for index in right.size():
 					if not compare_snapshot(left[index], right[index], path + "[%d]" % index, stage): return false
@@ -393,6 +566,8 @@ func check_value(actual: Variant, descriptor: Dictionary, location: String, stag
 			return false
 		for index in descriptor.entries.size():
 			if not check_value(actual[index], descriptor.entries[index], location + "[%d]" % index, stage, identity): return false
+		return compare_snapshot(snapshot(actual, location), descriptor.snapshot, location, stage)
+	if descriptor.kind == "container":
 		return compare_snapshot(snapshot(actual, location), descriptor.snapshot, location, stage)
 	if descriptor.kind == "scalar":
 		if descriptor.value == null and actual == null: return true
@@ -459,7 +634,14 @@ func build(spec: Dictionary, path: String = "", depth: int = 0) -> Dictionary:
 		var value: Variant = spec.properties[field]
 		var kind := int(property.type)
 		var descriptor := { "kind": "scalar", "value": value }
-		if kind == TYPE_ARRAY:
+		if kind == TYPE_DICTIONARY or PACKED_ELEMENTS.has(kind) or (kind == TYPE_ARRAY and scalar_kind(int(property.element.type))):
+			if not value is Dictionary:
+				fail("validate", "Expected an explicit $variant container", location)
+				return {}
+			value = decode_variant(value, kind, location, property)
+			if failed: return {}
+			descriptor = { "kind": "container", "value": value, "snapshot": snapshot(value, location) }
+		elif kind == TYPE_ARRAY:
 			if not value is Array:
 				fail("validate", "Expected an array of Resources", location)
 				return {}
@@ -493,7 +675,7 @@ func build(spec: Dictionary, path: String = "", depth: int = 0) -> Dictionary:
 		expected[field] = descriptor
 	for field: String in expected:
 		resource.set(field, expected[field].value)
-		if expected[field].kind == "scalar":
+		if expected[field].kind in ["scalar", "container"]:
 			var requested: Variant = spec.properties[field]
 			spec.properties[field] = encode_variant(expected[field].value) if requested is Dictionary and requested.has("$variant") else expected[field].value
 	if not check_requested(resource, expected, path, "assign", true): return {}

@@ -120,9 +120,9 @@ script-class or asset caches with `gdkit cache refresh` when necessary.
 Properties must be writable and serialized. Supported values are booleans,
 integers, floats, strings, tagged `StringName`, `NodePath`, vectors, integer
 vectors, `Color`, rectangles, and spatial values, Resource fields, and typed
-arrays of Resources. Unknown fields, transient fields,
-scalar containers, and unsupported compound values fail explicitly. Plain JSON
-integer input is limited to the exact transport range of plus or minus
+arrays of Resources, packed arrays, and typed scalar arrays and dictionaries.
+Unknown fields, transient fields, and unsupported compound values fail explicitly.
+Plain JSON integer input is limited to the exact transport range of plus or minus
 9007199254740991. Tagged integer strings support the full signed 64-bit range.
 Values are checked after assignment and again
 after Godot saves and reloads the staged `.tres` without its instance cache.
@@ -197,6 +197,48 @@ requested value. For example:
 ```
 
 
+Packed array tags are `PackedByteArray`, `PackedInt32Array`, `PackedInt64Array`,
+`PackedFloat32Array`, `PackedFloat64Array`, `PackedStringArray`,
+`PackedVector2Array`, `PackedVector3Array`, `PackedVector4Array`, and
+`PackedColorArray`. Their `value` is an ordered JSON array. Vector/color entries
+use their existing tags. Byte entries must be 0 to 255, and Int32 entries must
+fit signed 32-bit storage. Int64 entries beyond the safe JSON range use the
+`int` string tag. Float and vector entries must survive storage and reload
+exactly; for example Float32 rejects an authored `0.1`, while Float64 accepts it.
+
+Scalar arrays and dictionaries declare their types explicitly:
+
+```json
+{
+  "scores": {"$variant": {"type": "Array", "value": {
+    "element_type": "int",
+    "items": [10, {"$variant": {"type": "int", "value": "9223372036854775807"}}]
+  }}},
+  "scores_by_name": {"$variant": {"type": "Dictionary", "value": {
+    "key_type": "StringName",
+    "value_type": "int",
+    "entries": [[{"$variant": {"type": "StringName", "value": "Alice"}}, 10]]
+  }}}
+}
+```
+
+Type names must match the property's actual Godot container metadata. Scalar
+means `bool`, `int`, `float`, `String`, or any supported non-container Variant
+such as `NodePath`, `Vector3`, or `Transform3D`. Container entries use the same
+scalar and tagged value rules as individual properties. Dictionaries use
+`[key, value]` pairs to preserve non-string keys, and reject duplicate keys after
+decoding. Untyped containers, nested containers, and Resource-valued dictionaries
+are not creation inputs. Existing Resource arrays keep their earlier JSON-array
+syntax. Empty arrays and dictionaries preserve all declared types after reload.
+
+Schema container contracts include `element_contract`, or `key_contract` and
+`value_contract`, with their scalar codecs and allowed inputs. Non-empty defaults
+and verified creation results are reusable specs. Safe integers in container
+results use JSON numbers; larger integers always use decimal string tags.
+Indexed errors identify entries such as
+`scores.$variant.value.items[2]` or
+`scores_by_name.$variant.value.entries[1][0]`. Variant payloads exceeding 64 nested
+levels are rejected before engine execution.
 
 The verified file is published without overwriting an existing destination;
 failed operations remove their staging directory. Publication uses a hard link

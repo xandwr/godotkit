@@ -165,18 +165,12 @@ fn validate_value(
             }
         }
         Value::Object(object) if object.len() == 1 && object.contains_key("$variant") => {
-            if let Some(components) = object["$variant"]["value"].as_array() {
-                for (index, component) in components.iter().enumerate() {
-                    if component.is_number() {
-                        validate_value(
-                            project,
-                            component,
-                            &format!("{field}.$variant.value[{index}]"),
-                            depth,
-                        )?;
-                    }
-                }
-            }
+            validate_payload(
+                project,
+                &object["$variant"],
+                &format!("{field}.$variant"),
+                depth,
+            )?;
         }
         Value::Object(object) if object.len() == 1 && object.contains_key("$ref") => {
             let path = object["$ref"].as_str().ok_or_else(|| {
@@ -204,6 +198,35 @@ fn validate_value(
                     .to_owned(),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_payload(
+    project: &Path,
+    value: &Value,
+    field: &str,
+    depth: usize,
+) -> Result<(), (String, String)> {
+    if depth > 64 {
+        return Err((
+            field.to_owned(),
+            "Variant payload nesting exceeds limit of 64".to_owned(),
+        ));
+    }
+    match value {
+        Value::Number(_) => validate_value(project, value, field, depth)?,
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                validate_payload(project, item, &format!("{field}[{index}]"), depth + 1)?;
+            }
+        }
+        Value::Object(fields) => {
+            for (name, item) in fields {
+                validate_payload(project, item, &format!("{field}.{name}"), depth + 1)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
