@@ -2,6 +2,7 @@ extends SceneTree
 
 const PREFIX := "GDKIT_RESOURCE_RESULT:"
 const MAX_DEPTH := 16
+const VARIANT_TYPES := { "int": TYPE_INT, "StringName": TYPE_STRING_NAME, "NodePath": TYPE_NODE_PATH }
 
 var failed := false
 
@@ -49,7 +50,7 @@ func unsupported_reason(property: Dictionary) -> String:
 	elif int(property.type) == TYPE_ARRAY:
 		if not property.has("element") or resource_constraints(property.element).is_empty():
 			return "Array must declare a Resource element type"
-	elif int(property.type) not in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING]:
+	elif int(property.type) not in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH]:
 		return "Only scalar and Resource fields are supported"
 	return ""
 
@@ -101,12 +102,59 @@ func property_metadata(resource: Resource) -> Dictionary:
 	return metadata
 
 
+func variant_contract(kind: int) -> Dictionary:
+	for tag: String in VARIANT_TYPES:
+		if VARIANT_TYPES[tag] == kind:
+			var contract := { "tag": "$variant", "type": tag, "value_encoding": "string" }
+			if kind == TYPE_INT:
+				contract["minimum"] = "-9223372036854775808"
+				contract["maximum"] = "9223372036854775807"
+				contract["format"] = "canonical signed decimal"
+			return contract
+	return {}
+
+
+func encode_variant(value: Variant) -> Dictionary:
+	return { "$variant": { "type": variant_contract(typeof(value)).type, "value": str(value) } }
+
+
+func decode_variant(value: Dictionary, kind: int, location: String) -> Variant:
+	var tagged: Variant = value.get("$variant")
+	if value.size() != 1 or not tagged is Dictionary or tagged.size() != 2 or not tagged.has("type") or not tagged.has("value"):
+		fail("validate", "Expected $variant with exactly type and value", location)
+		return null
+	if not tagged.type is String or not VARIANT_TYPES.has(tagged.type) or VARIANT_TYPES[tagged.type] != kind:
+		fail("validate", "Variant tag must match the declared property type", location)
+		return null
+	if not tagged.value is String:
+		fail("validate", "Tagged scalar value must be a string", location)
+		return null
+	var text: String = tagged.value
+	match kind:
+		TYPE_INT:
+			var integer := text.to_int()
+			if str(integer) != text:
+				fail("validate", "Expected canonical signed 64-bit decimal integer", location)
+				return null
+			return integer
+		TYPE_STRING_NAME:
+			var name_value := StringName(text)
+			if str(name_value) == text: return name_value
+		TYPE_NODE_PATH:
+			var path_value := NodePath(text)
+			if str(path_value) == text: return path_value
+	fail("validate", "Tagged value cannot be represented exactly", location)
+	return null
+
+
 func default_value(value: Variant) -> Dictionary:
 	var kind := typeof(value)
 	if kind in [TYPE_NIL, TYPE_OBJECT] and value == null:
 		return { "encoding": "json", "value": null }
 	if kind in [TYPE_NIL, TYPE_BOOL, TYPE_STRING] or (kind == TYPE_INT and value >= -9007199254740991 and value <= 9007199254740991) or (kind == TYPE_FLOAT and is_finite(value)):
 		return { "encoding": "json", "value": value }
+	if kind in [TYPE_INT, TYPE_STRING_NAME, TYPE_NODE_PATH]:
+		return { "encoding": "tagged", "value": encode_variant(value) }
 	if value is Resource:
 		var script := value.get_script() as Script
 		return { "encoding": "resource", "value": { "path": value.resource_path, "type": value.get_class(), "script": script.resource_path if script != null else null } }
@@ -125,9 +173,19 @@ func enum_choices(property: Dictionary) -> Array:
 			var parts := option.split(":")
 			if parts.size() > 1:
 				enum_value = parts[1].to_int()
-			choices.append({ "name": parts[0], "value": enum_value })
+			choices.append({ "name": parts[0], "value": encode_variant(enum_value) if enum_value < -9007199254740991 or enum_value > 9007199254740991 else enum_value })
 			enum_value += 1
 	return choices
+
+
+func accepted_inputs(property: Dictionary, reason: String) -> Array:
+	if not reason.is_empty(): return []
+	match int(property.type):
+		TYPE_OBJECT: return ["null", "$ref", "$resource"]
+		TYPE_ARRAY: return ["array"]
+		TYPE_INT: return ["scalar", "$variant"]
+	if not variant_contract(int(property.type)).is_empty(): return ["$variant"]
+	return ["scalar"]
 
 
 func schema(resource: Resource, spec: Dictionary, metadata: Dictionary) -> void:
@@ -150,12 +208,13 @@ func schema(resource: Resource, spec: Dictionary, metadata: Dictionary) -> void:
 			"editor_visible": int(property.usage) & PROPERTY_USAGE_EDITOR != 0,
 			"create_supported": reason.is_empty(),
 			"unsupported_reason": reason,
+			"variant_contract": variant_contract(int(property.type)),
 			"resource_constraints": resource_constraints(property),
 			"element_constraints": resource_constraints(property.element) if property.has("element") else [],
 			"element_accepted_inputs": ["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_ARRAY else [],
-			"accepted_inputs":["null", "$ref", "$resource"] if reason.is_empty() and int(property.type) == TYPE_OBJECT else(["array"] if reason.is_empty() and int(property.type) == TYPE_ARRAY else (["scalar"] if reason.is_empty() else[])),
+			"accepted_inputs": accepted_inputs(property, reason),
 		})
-	print(PREFIX + JSON.stringify({ "status": "schema", "type": resource.get_class(), "script": spec.get("script"), "executes_constructors_and_getters": true, "fields": fields, "integer_min": -9007199254740991, "integer_max": 9007199254740991, "max_resource_depth": MAX_DEPTH }))
+	print(PREFIX + JSON.stringify({ "status": "schema", "type": resource.get_class(), "script": spec.get("script"), "executes_constructors_and_getters": true, "fields": fields, "integer_min": -9007199254740991, "integer_max": 9007199254740991, "max_resource_depth": MAX_DEPTH, "variant_codec_version": 1 }))
 	quit()
 
 
@@ -263,7 +322,7 @@ func resource_input(value: Variant, property: Dictionary, location: String, dept
 	var descriptor := { "kind": "scalar", "value": value }
 	if value == null: return descriptor
 	if error_location.is_empty(): error_location = location
-	if not value is Dictionary:
+	if not value is Dictionary or value.size() != 1 or (not value.has("$ref") and not value.has("$resource")):
 		fail("validate", "Expected null, $ref, or $resource", error_location)
 		return {}
 	var nested_path := location
@@ -325,6 +384,12 @@ func build(spec: Dictionary, path: String = "", depth: int = 0) -> Dictionary:
 			if failed: return {}
 			value = descriptor.value
 		elif kind != TYPE_OBJECT:
+			if value is Dictionary:
+				value = decode_variant(value, kind, location)
+				if failed: return {}
+			elif kind in [TYPE_STRING_NAME, TYPE_NODE_PATH]:
+				fail("validate", "Expected an explicit $variant tag", location)
+				return {}
 			if kind == TYPE_INT and value is float and is_finite(value) and value == floor(value) and abs(value) <= 9007199254740991.0:
 				value = int(value)
 			if typeof(value) != kind:
@@ -334,7 +399,9 @@ func build(spec: Dictionary, path: String = "", depth: int = 0) -> Dictionary:
 		expected[field] = descriptor
 	for field: String in expected:
 		resource.set(field, expected[field].value)
-		if expected[field].kind == "scalar": spec.properties[field] = expected[field].value
+		if expected[field].kind == "scalar":
+			var requested: Variant = spec.properties[field]
+			spec.properties[field] = encode_variant(expected[field].value) if requested is Dictionary and requested.has("$variant") else expected[field].value
 	if not check_requested(resource, expected, path, "assign", true): return {}
 	return { "resource": resource, "expected": expected }
 

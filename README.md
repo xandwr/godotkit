@@ -117,13 +117,35 @@ operation executes project constructors, getters, and setters without entering
 the main scene. Existing project dependencies must be importable; refresh stale
 script-class or asset caches with `gdkit cache refresh` when necessary.
 
-Properties must be writable, serialized booleans, integers, floats, strings, or
-Resource-valued fields. Unknown fields, transient fields, arrays, dictionaries,
-and other compound input values fail explicitly. Integer input is limited to the exact JSON transport range of
-plus or minus 9007199254740991. Values are checked after assignment and again
+Properties must be writable and serialized. Supported values are booleans,
+integers, floats, strings, tagged `StringName` and `NodePath` values, Resource
+fields, and typed arrays of Resources. Unknown fields, transient fields,
+scalar containers, and unsupported compound values fail explicitly. Plain JSON
+integer input is limited to the exact transport range of plus or minus
+9007199254740991. Tagged integer strings support the full signed 64-bit range.
+Values are checked after assignment and again
 after Godot saves and reloads the staged `.tres` without its instance cache.
 Setter transformations and serialization precision changes fail verification.
 Unspecified fields retain engine or script defaults.
+
+The version 1 tagged scalar codec uses exactly one `$variant` key containing
+exactly `type` and `value`. All three scalar tags require a string payload:
+
+```json
+{
+  "integer": {"$variant": {"type": "int", "value": "9223372036854775807"}},
+  "symbol": {"$variant": {"type": "StringName", "value": "Shotgun"}},
+  "node_path": {"$variant": {"type": "NodePath", "value": "Root/Child:position"}}
+}
+```
+
+The tag must match the declared property type. Integer text must be canonical
+signed decimal from `-9223372036854775808` to `9223372036854775807`; leading zeros,
+a plus sign, whitespace, and `-0` are rejected. `StringName` and `NodePath`
+require explicit tags, including for empty values. Any engine normalization of
+the payload is rejected. Tagged values remain tagged in creation results,
+including nested specs, so large integers never pass through a JSON number.
+No expression evaluation or arbitrary GDScript input is supported.
 
 The verified file is published without overwriting an existing destination;
 failed operations remove their staging directory. Publication uses a hard link
@@ -191,14 +213,18 @@ constraints contain native/global `class` and a registered `script` path when
 available. Supported Resource fields list `null`, `$ref`, and `$resource` as
 accepted inputs. Supported Resource arrays list `array`, expose
 `element_constraints`, and list their allowed `element_accepted_inputs`.
-Results also include `max_resource_depth`. Inspector
+Tagged scalar fields expose `variant_contract` with the tag, type, payload
+encoding, and integer bounds where applicable. Results also include
+`variant_codec_version` and `max_resource_depth`. Inspector
 group/category entries are omitted. Enum choices
 contain `name` and `value`, including explicit integer enum values. Hints describe
 editor controls; setters and reload verification still determine creation success.
 
 Defaults carry an `encoding` and `value`: `json` for transportable scalar values
-and null; `resource` for a descriptive path/type/script reference; `godot` for
-Godot text describing other values, including compound or out-of-range defaults.
+and null; `tagged` for reusable `$variant` inputs, including large integers,
+`StringName`, and `NodePath`; `resource` for a descriptive path/type/script
+reference; `godot` for Godot text describing other values, including unsupported
+compound defaults.
 An empty resource path denotes an unsaved resource. Descriptive defaults are not
 creation inputs; use `$ref` or `$resource` explicitly for a Resource default.
 `create_supported` describes the field's type and usage, so

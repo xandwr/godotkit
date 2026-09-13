@@ -137,7 +137,12 @@ fn validate_value(
         Value::Array(entries) => {
             for (index, entry) in entries.iter().enumerate() {
                 let location = format!("{field}[{index}]");
-                if !entry.is_null() && !entry.is_object() {
+                if !entry.is_null()
+                    && !entry.as_object().is_some_and(|object| {
+                        object.len() == 1
+                            && (object.contains_key("$ref") || object.contains_key("$resource"))
+                    })
+                {
                     return Err((
                         location,
                         "Expected null, $ref, or $resource array entry".to_owned(),
@@ -159,6 +164,7 @@ fn validate_value(
                 ));
             }
         }
+        Value::Object(object) if object.len() == 1 && object.contains_key("$variant") => {}
         Value::Object(object) if object.len() == 1 && object.contains_key("$ref") => {
             let path = object["$ref"].as_str().ok_or_else(|| {
                 (

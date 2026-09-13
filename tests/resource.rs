@@ -294,7 +294,10 @@ fn discovers_instance_defaults_hints_and_creation_support() {
     );
     assert_eq!(field("offset")["default"]["encoding"], "godot");
     assert_eq!(field("items")["default"]["encoding"], "godot");
-    assert_eq!(field("large")["default"]["encoding"], "godot");
+    assert_eq!(
+        field("large")["default"],
+        json!({"encoding":"tagged","value":{"$variant":{"type":"int","value":"-9223372036854775808"}}})
+    );
     assert_eq!(field("target")["default"]["value"], Value::Null);
     assert_eq!(field("target")["class_name"], "Resource");
     assert_eq!(field("target")["create_supported"], true);
@@ -703,5 +706,201 @@ fn creates_nested_resources_and_verifies_external_references() {
             .to_string_lossy()
             .starts_with(".gdkit-resource-")
     }));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
+fn tagged_scalars_round_trip_exactly_and_expose_reusable_defaults() {
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::env::temp_dir().join(format!(
+        "gdkit-tagged-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(directory.join("values.gd"), "extends Resource\n@export var integer: int = -9223372036854775808\n@export var symbol: StringName = &\"default\"\n@export var node_path: NodePath = ^\"Root/Child:position:x\"\n@export var child: Resource\n@export var clamped: int = 0:\n\tset(new_value):\n\t\tclamped = clampi(new_value, 0, 10)\n").unwrap();
+    let run = |spec: Value, destination: &str| {
+        fs::write(
+            directory.join("spec.json"),
+            serde_json::to_vec(&spec).unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+            .current_dir(&directory)
+            .env_remove("GDKIT_GODOT")
+            .args([
+                "resource",
+                "create",
+                "--spec",
+                "spec.json",
+                "--out",
+                destination,
+                "--output",
+                "json",
+                "--godot",
+            ])
+            .arg(&engine)
+            .output()
+            .unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "{error}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (output.status.success(), result)
+    };
+    let tag = |kind: &str, value: &str| json!({"$variant":{"type":kind,"value":value}});
+    for (index, integer) in [
+        "-9223372036854775808",
+        "9223372036854775807",
+        "9007199254740992",
+        "-9007199254740992",
+        "0",
+        "-1",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let properties = json!({"integer":tag("int", integer), "symbol":tag("StringName", "name with spaces \u{03bb}"), "node_path":tag("NodePath", "/Root/Child:position:x")});
+        let (ok, result) = run(
+            json!({"script":"res://values.gd","properties":properties}),
+            &format!("res://values{index}.tres"),
+        );
+        assert!(ok, "{result}");
+        assert_eq!(result["properties"], properties);
+    }
+    let (ok, result) = run(
+        json!({"script":"res://values.gd","properties":{"symbol":tag("StringName", ""),"node_path":tag("NodePath", "")}}),
+        "res://empty.tres",
+    );
+    assert!(ok, "{result}");
+    let (ok, result) = run(
+        json!({"script":"res://values.gd","properties":{"child":{"$resource":{"script":"res://values.gd","properties":{"integer":tag("int", "9223372036854775807")}}}}}),
+        "res://nested.tres",
+    );
+    assert!(ok, "{result}");
+    assert_eq!(
+        result["properties"]["child"]["$resource"]["properties"]["integer"],
+        tag("int", "9223372036854775807")
+    );
+    let schema = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .current_dir(&directory)
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "resource",
+            "schema",
+            "--script",
+            "res://values.gd",
+            "--output",
+            "json",
+            "--godot",
+        ])
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(
+        schema.status.success(),
+        "{}",
+        String::from_utf8_lossy(&schema.stderr)
+    );
+    let schema: Value = serde_json::from_slice(&schema.stdout).unwrap();
+    assert_eq!(schema["variant_codec_version"], 1);
+    let fields = schema["fields"].as_array().unwrap();
+    for (name, kind) in [
+        ("integer", "int"),
+        ("symbol", "StringName"),
+        ("node_path", "NodePath"),
+    ] {
+        let field = fields.iter().find(|field| field["name"] == name).unwrap();
+        assert_eq!(field["create_supported"], true);
+        assert_eq!(field["variant_contract"]["type"], kind);
+        assert_eq!(field["variant_contract"]["value_encoding"], "string");
+        assert_eq!(field["default"]["encoding"], "tagged");
+    }
+    let properties: serde_json::Map<String, Value> = fields
+        .iter()
+        .filter(|field| {
+            field["create_supported"] == true
+                && ["json", "tagged"].contains(&field["default"]["encoding"].as_str().unwrap())
+        })
+        .map(|field| {
+            (
+                field["name"].as_str().unwrap().to_owned(),
+                field["default"]["value"].clone(),
+            )
+        })
+        .collect();
+    let (ok, result) = run(
+        json!({"script":"res://values.gd","properties":properties}),
+        "res://defaults.tres",
+    );
+    assert!(ok, "{result}");
+    fs::write(directory.join("probe.gd"), "extends SceneTree\nfunc _initialize():\n\tvar low = load(\"res://values0.tres\")\n\tvar high = load(\"res://values1.tres\")\n\tassert(low.integer == -9223372036854775808)\n\tassert(high.integer == 9223372036854775807)\n\tassert(typeof(low.symbol) == TYPE_STRING_NAME)\n\tassert(str(low.symbol) == \"name with spaces \u{03bb}\")\n\tassert(typeof(low.node_path) == TYPE_NODE_PATH)\n\tassert(str(low.node_path) == \"/Root/Child:position:x\")\n\tquit()\n").unwrap();
+    let probe = Command::new(&engine)
+        .args(["--headless", "--path"])
+        .arg(&directory)
+        .args(["--script", "res://probe.gd"])
+        .output()
+        .unwrap();
+    assert!(probe.status.success());
+    assert!(
+        !String::from_utf8_lossy(&probe.stderr).contains("ERROR:"),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    for invalid in [
+        tag("int", "9223372036854775808"),
+        tag("int", "-9223372036854775809"),
+        tag("int", "01"),
+        tag("int", "+1"),
+        tag("int", "-0"),
+        tag("int", "1.0"),
+        tag("int", "1x"),
+        tag("int", ""),
+        json!({"$variant":{"type":"int","value":1}}),
+        json!({"$variant":{"type":"int","value":"1","extra":true}}),
+        tag("Unknown", "1"),
+        tag("StringName", "1"),
+        json!({"$variant":null}),
+    ] {
+        let (ok, result) = run(
+            json!({"script":"res://values.gd","properties":{"integer":invalid}}),
+            "res://failure.tres",
+        );
+        assert!(!ok, "{result}");
+        assert_eq!(result["stage"], "validate");
+        assert_eq!(result["field"], "integer");
+        assert!(!directory.join("failure.tres").exists());
+    }
+    let (ok, result) = run(
+        json!({"script":"res://values.gd","properties":{"child":tag("int", "1")}}),
+        "res://failure.tres",
+    );
+    assert!(!ok, "{result}");
+    assert_eq!(result["stage"], "validate");
+    assert_eq!(result["field"], "child");
+    for name in ["symbol", "node_path"] {
+        let (ok, result) = run(
+            json!({"script":"res://values.gd","properties":{name:"ordinary string"}}),
+            "res://failure.tres",
+        );
+        assert!(!ok, "{result}");
+        assert_eq!(result["field"], name);
+    }
+    let (ok, result) = run(
+        json!({"script":"res://values.gd","properties":{"clamped":tag("int", "9223372036854775807")}}),
+        "res://failure.tres",
+    );
+    assert!(!ok, "{result}");
+    assert_eq!(result["stage"], "assign");
+    assert_eq!(result["field"], "clamped");
+    assert!(!directory.join("failure.tres").exists());
     fs::remove_dir_all(directory).unwrap();
 }
