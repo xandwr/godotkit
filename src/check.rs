@@ -23,6 +23,7 @@ use crate::process::{CapturedOutput, OutputStream};
 
 const HARNESS: &str = include_str!("check.gd");
 const IMPORT_SCAN: &str = include_str!("import_scan.gd");
+const SCRIPT_BOOTSTRAP: &str = include_str!("script_bootstrap.gd");
 const IMPORT_SCAN_RESULT: &str = "GDKIT_IMPORT_SCAN_COMPLETE";
 const RESULT_PREFIX: &str = "GDKIT_CHECK_RESULT:";
 
@@ -589,14 +590,17 @@ fn smoke_output(
 fn script_output(
     engine: &Path,
     project: &Path,
-    script: &Path,
+    script: &str,
     timeout: u64,
 ) -> io::Result<CapturedOutput> {
+    let bootstrap = TemporaryScript::create(SCRIPT_BOOTSTRAP.as_bytes(), "gd")?;
     let mut command = Command::new(engine);
     command
         .args(["--headless", "--no-header", "--path"])
         .arg(project)
         .arg("--script")
+        .arg(&bootstrap.0)
+        .arg("--")
         .arg(script);
     crate::process::run(&mut command, Some(Duration::from_secs(timeout)))
 }
@@ -1167,7 +1171,13 @@ fn run_project(
             {
                 return Err("project scripts must be .gd files inside the project".into());
             }
-            Ok(path)
+            Ok(format!(
+                "res://{}",
+                path.strip_prefix(fs::canonicalize(project)?)?
+                    .to_str()
+                    .ok_or("project script path is not valid UTF-8")?
+                    .replace('\\', "/")
+            ))
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
     let config = crate::engine::read_config(source_project)?;

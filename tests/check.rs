@@ -2,6 +2,54 @@ use std::{fs, process::Command};
 
 #[test]
 #[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
+fn project_script_runtime_initializes_autoload_identifiers() {
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".tools")
+        .join(format!("gdkit-check-autoload-{}", std::process::id()));
+    fs::create_dir_all(directory.parent().unwrap()).unwrap();
+    fs::create_dir(&directory).unwrap();
+    fs::write(
+        directory.join("project.godot"),
+        "config_version=5\n[autoload]\nGameSettings=\"*res://game_settings.gd\"\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("game_settings.gd"),
+        "extends Node\n\nvar enabled := true\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("contract.gd"),
+        "extends SceneTree\n\nfunc _initialize() -> void:\n\tassert(GameSettings.enabled)\n\tprint(\"autoload contract passed\")\n\tquit(0)\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .env("NO_COLOR", "1")
+        .env_remove("GDKIT_GODOT")
+        .args([
+            "check",
+            directory.to_str().unwrap(),
+            "--godot",
+            engine.to_str().unwrap(),
+            "--script",
+            "contract.gd",
+        ])
+        .output()
+        .unwrap();
+
+    let _ = fs::remove_dir_all(&directory);
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
 fn checks_project_scripts_scenes_and_resources() {
     let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
