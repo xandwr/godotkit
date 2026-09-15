@@ -1240,6 +1240,57 @@ fn run_project(
     let mut sequence_base = 0;
 
     let import_timer = PhaseTimer::new("import", args.timings);
+    let import_phase = phase("import", CheckPhase::Import);
+    let cache_import = engine_output(
+        &engine,
+        project,
+        &[
+            OsStr::new("--editor"),
+            OsStr::new("--quiet"),
+            OsStr::new("--import"),
+        ],
+    )?;
+    report
+        .artifacts
+        .extend(artifacts.preserve("cache-import", &import_phase, &cache_import)?);
+    let (filtered_cache_import, cache_ignored) = filter_import_errors(&cache_import, rules);
+    let cache_import_diagnostics = filtered_cache_import.retaining_lines(|index| {
+        !is_cleanup_diagnostic(
+            String::from_utf8_lossy(&filtered_cache_import.lines[index].bytes).trim(),
+        )
+    });
+    report.diagnostics.extend(structured_diagnostics(
+        &cache_import_diagnostics,
+        &import_phase,
+        sequence_base,
+        session_id,
+    ));
+    sequence_base += u64::try_from(cache_import.lines.len()).unwrap_or(u64::MAX);
+    let cache_import_errors = has_errors(&cache_import_diagnostics.output);
+    if !cache_import.output.status.success() {
+        report.failures.push(CheckFailure {
+            kind: FailureKind::ProcessExit,
+            phase: Some(import_phase.clone()),
+            message: format!(
+                "Godot cache import exited with {}",
+                cache_import.output.status
+            ),
+        });
+    }
+    if cache_import_errors {
+        report.failures.push(CheckFailure {
+            kind: FailureKind::Diagnostic,
+            phase: Some(import_phase.clone()),
+            message: "cache import reported one or more errors".into(),
+        });
+    }
+    write_diagnostics(
+        &cache_import_diagnostics,
+        "Cache import",
+        project,
+        &paths,
+        args.verbose,
+    )?;
     let import_scan = TemporaryScript::create(IMPORT_SCAN.as_bytes(), "gd")?;
     let import_completion = TemporaryScript::create(b"", "complete")?;
     fs::remove_file(&import_completion.0)?;
@@ -1257,7 +1308,6 @@ fn run_project(
         ],
     )?;
     drop(import_timer);
-    let import_phase = phase("import", CheckPhase::Import);
     report
         .artifacts
         .extend(artifacts.preserve("import", &import_phase, &import)?);
@@ -1272,7 +1322,7 @@ fn run_project(
                 String::from_utf8_lossy(&filtered_import.lines[index].bytes).trim(),
             )
     });
-    report.suppressed_diagnostics += ignored;
+    report.suppressed_diagnostics += cache_ignored + ignored;
     report.diagnostics.extend(structured_diagnostics(
         &import_diagnostics,
         &import_phase,
@@ -1293,7 +1343,10 @@ fn run_project(
         });
     }
     let import_errors = has_errors(&import_diagnostics.output);
-    let mut failed = !import_completed || import_errors;
+    let mut failed = !cache_import.output.status.success()
+        || cache_import_errors
+        || !import_completed
+        || import_errors;
     if !import.output.status.success() && !import_completed {
         report.failures.push(CheckFailure {
             kind: FailureKind::ProcessExit,
@@ -1308,9 +1361,10 @@ fn run_project(
             message: "import reported one or more errors".into(),
         });
     }
-    if ignored > 0 {
+    if cache_ignored + ignored > 0 {
         eprintln!(
-            "Import: ignored {ignored} configured diagnostic(s); use --verbose for original output."
+            "Import: ignored {} configured diagnostic(s); use --verbose for original output.",
+            cache_ignored + ignored
         );
     }
     write_diagnostics(&import_diagnostics, "Import", project, &paths, args.verbose)?;

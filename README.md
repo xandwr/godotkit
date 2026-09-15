@@ -404,9 +404,10 @@ discarding imported assets and shader caches as well. Rebuild preserves existing
 resource identities; it does not assign fresh UIDs to every resource.
 
 `check` copies the project to a disposable directory without `.godot` or `.git`,
-runs the selected editor's complete import and filesystem scan against that clean
-copy, collects its GDScript diagnostics, and then loads every GDScript, scene,
-resource, and Godot shader outside ignored and hidden directories. Reports and
+uses the selected editor's dedicated import mode to populate the clean copy's
+cache, then performs a complete editor filesystem scan, collects its GDScript
+diagnostics, and loads every GDScript, scene, resource, and Godot shader outside
+ignored and hidden directories. Reports and
 artifacts remain associated with the source project, whose Godot caches are not
 read or changed. It exits 1 when Godot reports an error or a resource fails to
 load, and exits 2 for tooling failures such as a missing project, invalid

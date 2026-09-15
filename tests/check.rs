@@ -185,6 +185,16 @@ fn checks_project_scripts_scenes_and_resources() {
     assert!(report.artifacts.iter().any(|artifact| {
         artifact.kind == gdkit::report::ArtifactKind::Report && artifact.path.is_file()
     }));
+    assert!(report.artifacts.iter().any(|artifact| {
+        artifact.phase.as_ref().is_some_and(|phase| {
+            phase.kind == gdkit::report::CheckPhase::Import
+                && artifact.kind == gdkit::report::ArtifactKind::Stdout
+                && artifact
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy() == "cache-import.stdout.log")
+        })
+    }));
     assert!(!String::from_utf8_lossy(&json.stderr).contains("check passed"));
     assert_eq!(
         fs::read_to_string(directory.join(".godot/editor/filesystem_cache10")).unwrap(),
