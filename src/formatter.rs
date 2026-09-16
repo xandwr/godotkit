@@ -61,6 +61,20 @@ fn disabled(ranges: &[Span], span: Span) -> bool {
         .any(|range| span.start < range.end && span.end > range.start)
 }
 
+fn field_category(kind: K, exported: bool, onready: bool, private: bool) -> usize {
+    if kind == K::ConstDecl {
+        0
+    } else if exported {
+        1
+    } else if onready {
+        2
+    } else if private {
+        4
+    } else {
+        3
+    }
+}
+
 fn visual_width(text: &str, tab_width: usize) -> usize {
     let tab_width = tab_width.max(1);
     text.chars().fold(0, |column, ch| {
@@ -893,8 +907,7 @@ fn normalize_whitespace(source: &str) -> Result<String, SyntaxError> {
         .descendants()
         .filter(|node| matches!(node.kind(), K::SourceFile | K::ClassBody))
     {
-        type Category = (K, bool, bool, usize);
-        let mut previous: Option<(K, usize, Category)> = None;
+        let mut previous: Option<(K, usize, (K, usize))> = None;
         let mut annotations = Vec::new();
         let mut annotation_start = None;
         for member in scope.children() {
@@ -924,19 +937,19 @@ fn normalize_whitespace(source: &str) -> Result<String, SyntaxError> {
                         .find(|token| token.kind == K::Ident)
                         .is_some_and(|token| source[token.range].starts_with('_'))
                 });
-            let is_static = first.kind == K::StaticKw;
-            let rank = if annotations
+            let exported = annotations
                 .iter()
-                .any(|name: &String| name == "export" || name.starts_with("export_"))
-            {
-                1
-            } else if annotations.iter().any(|name| name == "onready") {
-                2
-            } else {
-                3
-            };
+                .any(|name: &String| name == "export" || name.starts_with("export_"));
+            let onready = annotations.iter().any(|name| name == "onready");
             annotations.clear();
-            let category = (member.kind(), private, is_static, rank);
+            let category = if matches!(member.kind(), K::VarDecl | K::ConstDecl) {
+                (
+                    K::VarDecl,
+                    field_category(member.kind(), exported, onready, private),
+                )
+            } else {
+                (member.kind(), 0)
+            };
             if let Some((previous_kind, previous_end, previous_category)) = &previous {
                 while start > previous_end + 1 && lines[start - 1].trim_start().starts_with('#') {
                     start -= 1;
@@ -995,21 +1008,188 @@ fn normalize_whitespace(source: &str) -> Result<String, SyntaxError> {
     }
     Ok(output)
 }
+fn attached_field_start(
+    source: &str,
+    at: usize,
+    previous_end: usize,
+    has_body_member: bool,
+    disabled_ranges: &[Span],
+) -> usize {
+    let mut start = line_start(source, at);
+    while start > previous_end {
+        let previous_start = line_start(
+            source,
+            start
+                .saturating_sub(1)
+                .saturating_sub(usize::from(source[..start].ends_with("\r\n"))),
+        );
+        let line = source[previous_start..start].trim();
+        if disabled(disabled_ranges, Span::new(previous_start, start))
+            || previous_start < previous_end
+            || !(line.is_empty() || line.starts_with('#'))
+            || (!has_body_member && line.starts_with('#'))
+        {
+            break;
+        }
+        start = previous_start;
+    }
+    start
+}
+
+fn reorder_script_fields(source: &str) -> String {
+    let parsed = parse(source);
+    let scope = parsed.root();
+    let disabled_ranges = disabled_ranges(source);
+    if scope
+        .children()
+        .any(|member| disabled(&disabled_ranges, member.range()))
+    {
+        return source.to_owned();
+    }
+    let mut fields = Vec::new();
+    let mut annotation_start = None;
+    let mut exported = false;
+    let mut onready = false;
+    let mut previous_end = scope.range().start;
+    let mut has_body_member = false;
+    let mut body_start = None;
+
+    for member in scope.children() {
+        let Some(first) = member.tokens().find(|token| significant(token.kind)) else {
+            continue;
+        };
+        if member.kind() == K::Annotation {
+            annotation_start.get_or_insert(first.range.start);
+            let name = member
+                .tokens()
+                .find(|token| token.kind == K::Ident)
+                .map(|token| &source[token.range])
+                .unwrap_or("");
+            if matches!(name, "export_group" | "export_subgroup" | "export_category") {
+                let at = annotation_start.take().unwrap();
+                let start = attached_field_start(
+                    source,
+                    at,
+                    previous_end,
+                    has_body_member,
+                    &disabled_ranges,
+                );
+                let last = member
+                    .tokens()
+                    .filter(|token| significant(token.kind))
+                    .last()
+                    .unwrap();
+                let end = line_end(source, last.range.end);
+                body_start.get_or_insert(start);
+                fields.push((start, end, 1));
+                previous_end = end;
+                has_body_member = true;
+                exported = false;
+                onready = false;
+            } else if name == "export" || name.starts_with("export_") {
+                exported = true;
+            } else if name == "onready" {
+                onready = true;
+            }
+            continue;
+        }
+
+        let at = annotation_start.take().unwrap_or(first.range.start);
+        if !matches!(member.kind(), K::ExtendsClause | K::ClassNameDecl) {
+            body_start.get_or_insert(line_start(source, at));
+        }
+        let last = member
+            .tokens()
+            .filter(|token| significant(token.kind))
+            .last()
+            .unwrap();
+        let end = line_end(source, last.range.end);
+        let private = member
+            .children()
+            .find(|node| node.kind() == K::Name)
+            .is_some_and(|name| {
+                name.tokens()
+                    .find(|token| token.kind == K::Ident)
+                    .is_some_and(|token| source[token.range].starts_with('_'))
+            });
+        if matches!(member.kind(), K::VarDecl | K::ConstDecl)
+            && source[line_start(source, at)..at].trim().is_empty()
+            && !source[last.range.end..end].trim().starts_with(';')
+        {
+            let start =
+                attached_field_start(source, at, previous_end, has_body_member, &disabled_ranges);
+            fields.push((
+                start,
+                end,
+                field_category(member.kind(), exported, onready, private),
+            ));
+        }
+        exported = false;
+        onready = false;
+        previous_end = end;
+        if !matches!(member.kind(), K::ExtendsClause | K::ClassNameDecl) {
+            has_body_member = true;
+        }
+    }
+
+    let Some(start) = body_start else {
+        return source.to_owned();
+    };
+    if fields.is_empty() {
+        return source.to_owned();
+    }
+    fields.sort_by_key(|field| field.0);
+    let mut remainder = String::new();
+    let mut cursor = start;
+    for (from, to, _) in &fields {
+        if *from > cursor {
+            remainder.push_str(&source[cursor..*from]);
+        }
+        cursor = cursor.max(*to);
+    }
+    remainder.push_str(&source[cursor..]);
+
+    let mut sorted = fields.clone();
+    sorted.sort_by_key(|field| field.2);
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut replacement = String::new();
+    for (index, (from, to, _)) in sorted.iter().enumerate() {
+        if index > 0 && !replacement.ends_with('\n') {
+            replacement.push_str(newline);
+        }
+        replacement.push_str(&source[*from..*to]);
+    }
+    if !replacement.ends_with('\n') && !remainder.is_empty() {
+        replacement.push_str(newline);
+    }
+    replacement.push_str(&remainder);
+
+    let mut output = source[..start].to_owned();
+    output.push_str(&replacement);
+    output
+}
+
 fn reorder_fields(source: &str) -> String {
+    let source = reorder_script_fields(source);
+    let source = source.as_str();
     let parsed = parse(source);
     let disabled_ranges = disabled_ranges(source);
     let mut edits = Vec::new();
     for scope in parsed
         .root()
         .descendants()
-        .filter(|node| matches!(node.kind(), K::SourceFile | K::ClassBody))
+        .filter(|node| node.kind() == K::ClassBody)
     {
         let mut fields = Vec::new();
         let mut annotation_start = None;
         let mut exported = false;
         let mut onready = false;
         let mut has_body_member = false;
-        let flush = |fields: &mut Vec<(usize, usize, (usize, bool))>,
+        let flush = |fields: &mut Vec<(usize, usize, usize)>,
                      edits: &mut Vec<(usize, usize, String)>| {
             if fields.windows(2).any(|pair| pair[0].2 > pair[1].2) {
                 let start = fields[0].0;
@@ -1111,17 +1291,7 @@ fn reorder_fields(source: &str) -> String {
                 fields.push((
                     start,
                     end,
-                    if member.kind() == K::ConstDecl {
-                        (0, private)
-                    } else if first.kind == K::StaticKw {
-                        (1, private)
-                    } else if exported {
-                        (2, private)
-                    } else if onready {
-                        (4, private)
-                    } else {
-                        (3, private)
-                    },
+                    field_category(member.kind(), exported, onready, private),
                 ));
             } else {
                 flush(&mut fields, &mut edits);

@@ -259,7 +259,7 @@ fn exact(before: &str, after: &str) {
 fn cleans_character_script_spacing() {
     exact(
         "# autoload\nextends Node2D\n\n@onready var instance_container: Node2D = %CharacterInstances\nvar _live_instances: Array[Node2D] = []\nfunc spawn_character(definition_path: String):\n  var _ci = CharacterSpawner.build_character_from_file(definition_path)  \n  \n  _live_instances.append(_ci)\n  instance_container.add_child(_ci)\n  \nfunc clear_instances() -> void:\n  _live_instances.clear()\n\n\n",
-        "# autoload\nextends Node2D\n\nvar _live_instances: Array[Node2D] = []\n\n@onready var instance_container: Node2D = %CharacterInstances\n\n\nfunc spawn_character(definition_path: String):\n\tvar _ci = CharacterSpawner.build_character_from_file(definition_path)\n\n\t_live_instances.append(_ci)\n\tinstance_container.add_child(_ci)\n\n\nfunc clear_instances() -> void: _live_instances.clear()\n",
+        "# autoload\nextends Node2D\n\n@onready var instance_container: Node2D = %CharacterInstances\n\nvar _live_instances: Array[Node2D] = []\n\n\nfunc spawn_character(definition_path: String):\n\tvar _ci = CharacterSpawner.build_character_from_file(definition_path)\n\n\t_live_instances.append(_ci)\n\tinstance_container.add_child(_ci)\n\n\nfunc clear_instances() -> void: _live_instances.clear()\n",
     );
 }
 
@@ -267,7 +267,7 @@ fn cleans_character_script_spacing() {
 fn orders_fields_with_their_annotations_and_comments() {
     exact(
         "extends Node\nvar value = 1\n# Scene node\n@onready var child = $Child\n@export_range(0, 10)\nvar speed = 2\nconst LIMIT = 10\nconst MINIMUM = 0\nvar _internal = 3\nfunc run():\n    pass\n",
-        "extends Node\n\nconst LIMIT = 10\nconst MINIMUM = 0\n\n@export_range(0, 10)\nvar speed = 2\n\nvar value = 1\n\nvar _internal = 3\n\n# Scene node\n@onready var child = $Child\n\n\nfunc run(): pass\n",
+        "extends Node\n\nconst LIMIT = 10\nconst MINIMUM = 0\n\n@export_range(0, 10)\nvar speed = 2\n\n# Scene node\n@onready var child = $Child\n\nvar value = 1\n\nvar _internal = 3\n\n\nfunc run(): pass\n",
     );
 }
 
@@ -300,7 +300,7 @@ fn preserves_multiline_string_whitespace() {
 fn respects_export_groups_and_groups_export_variants() {
     exact(
         "var before = 1\n@export_group(\"Movement\")\n@export var speed = 2\n@export_range(0, 10) var acceleration = 3\nvar after = 4\n",
-        "var before = 1\n\n@export_group(\"Movement\")\n@export var speed = 2\n@export_range(0, 10) var acceleration = 3\n\nvar after = 4\n",
+        "@export_group(\"Movement\")\n@export var speed = 2\n@export_range(0, 10) var acceleration = 3\n\nvar before = 1\nvar after = 4\n",
     );
 }
 
@@ -335,8 +335,24 @@ fn preserves_class_documentation_when_ordering_fields() {
 #[test]
 fn follows_field_category_and_visibility_order() {
     exact(
-        "@onready var child=$Child\nvar _private=1\n@export var speed=2\nstatic var cache={}\nvar public=3\nconst LIMIT=4\n",
-        "const LIMIT = 4\n\nstatic var cache = {}\n\n@export var speed = 2\n\nvar public = 3\n\nvar _private = 1\n\n@onready var child = $Child\n",
+        "@onready var child=$Child\nvar _private=1\n@export var speed=2\nstatic var cache={}\n@onready var _hidden=$Hidden\n@export var _tuning=5\nstatic var _static_private=6\nvar public=3\nconst LIMIT=4\n",
+        "const LIMIT = 4\n\n@export var speed = 2\n@export var _tuning = 5\n\n@onready var child = $Child\n@onready var _hidden = $Hidden\n\nstatic var cache = {}\nvar public = 3\n\nvar _private = 1\nstatic var _static_private = 6\n",
+    );
+}
+
+#[test]
+fn moves_all_script_fields_before_other_declarations() {
+    exact(
+        "extends Node\nsignal changed\nfunc run():\n    pass\nvar public = 1\nconst LIMIT = 2\n@onready var child = $Child\nvar _private = 3\n@export var speed = 4\nenum State { IDLE }\n",
+        "extends Node\n\nconst LIMIT = 2\n\n@export var speed = 4\n\n@onready var child = $Child\n\nvar public = 1\n\nvar _private = 3\n\nsignal changed\n\n\nfunc run(): pass\n\n\nenum State { IDLE }\n",
+    );
+}
+
+#[test]
+fn preserves_single_blank_lines_within_field_groups() {
+    exact(
+        "@export_group(\"Meshes\")\n@export var body: Node3D\n\n@export_group(\"Parameters\")\n@export var speed = 1.0\nvar second = 2\n\nvar first = 1\nvar _second = 4\n\nvar _first = 3\n",
+        "@export_group(\"Meshes\")\n@export var body: Node3D\n\n@export_group(\"Parameters\")\n@export var speed = 1.0\n\nvar second = 2\n\nvar first = 1\n\nvar _second = 4\n\nvar _first = 3\n",
     );
 }
 

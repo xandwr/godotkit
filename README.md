@@ -781,16 +781,15 @@ functions. Long calls and any nested calls that remain over width are wrapped
 recursively as the terminal formatting phase, after suite compaction and other
 rewrites. Multiline arrays, dictionaries, and enums receive trailing commas;
 single-line collections do not retain them. Functions have two blank lines between
-them and after preceding fields. Field categories have one blank line
-between them, including public/private and static/instance boundaries. Existing
-single blank lines within a category preserve semantic groups.
+them and after preceding fields. Field categories have one blank line between
+them. Existing single blank lines within a category preserve semantic groups.
 
-Consecutive fields are stably ordered: constants, static variables, exports,
-regular variables, then onready variables, with public names before private names.
-Attached comments and annotations move with fields. Script and inner-class
-documentation remains attached to its class.
-Functions, other declarations, and export group/category annotations act as sorting
-boundaries. Ordering can change initializer execution order across categories;
+All script-scoped fields move above signals, enums, functions, and inner classes.
+They are stably ordered as constants, exports, onready variables, public variables,
+then underscore-prefixed private variables. Static variables follow the same
+public/private name rule. Export group/category annotations and attached comments
+move with their fields. Script and inner-class documentation remains attached to
+its class. Ordering can change initializer execution order across categories;
 within each category, declaration order is preserved. String contents and existing
 line endings are preserved. Missing final newlines remain missing unless field
 reordering requires a line separator. Invalid input is rejected, including mixed
