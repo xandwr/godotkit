@@ -72,36 +72,56 @@ fn visual_width(text: &str, tab_width: usize) -> usize {
     })
 }
 
-fn guard_edit(node: Node<'_>, source: &str, options: &Options) -> Option<Span> {
+fn inlineable_statement(kind: K) -> bool {
+    matches!(
+        kind,
+        K::ReturnStmt
+            | K::BreakStmt
+            | K::ContinueStmt
+            | K::PassStmt
+            | K::BreakpointStmt
+            | K::AssertStmt
+            | K::ExprStmt
+            | K::VarDecl
+            | K::ConstDecl
+    )
+}
+
+fn inline_suite_edit(node: Node<'_>, source: &str) -> Option<Span> {
     let block = node.children().find(|child| child.kind() == K::Block)?;
     let mut statements = block.children();
     let statement = statements.next()?;
-    if statement.kind() != K::ReturnStmt
-        || statements.next().is_some()
-        || statement.children().next().is_some()
-    {
+    if !inlineable_statement(statement.kind()) || statements.next().is_some() {
         return None;
     }
-    let keyword = node
-        .children_with_tokens()
-        .find_map(|element| match element {
-            Element::Token(token) if token.kind == K::IfKw => Some(token),
-            _ => None,
-        })?;
     let colon = node
         .children_with_tokens()
-        .find_map(|element| match element {
+        .filter_map(|element| match element {
             Element::Token(token) if token.kind == K::Colon => Some(token),
             _ => None,
-        })?;
-    let returned = statement.tokens().find(|token| token.kind == K::ReturnKw)?;
-    let start = line_start(source, keyword.range.start);
-    let indent = &source[start..keyword.range.start];
+        })
+        .rfind(|token| token.range.end <= block.range().start)?;
+    let first = statement.tokens().find(|token| significant(token.kind))?;
+    let last = statement
+        .tokens()
+        .filter(|token| significant(token.kind))
+        .last()?;
+    let owner_start = node
+        .tokens()
+        .find(|token| significant(token.kind))?
+        .range
+        .start;
+    let start = line_start(source, owner_start);
+    let indent = &source[start..owner_start];
     let header = &source[start..colon.range.end];
     if !indent.bytes().all(|byte| matches!(byte, b' ' | b'\t')) || header.contains(['\r', '\n']) {
         return None;
     }
-    let gap = &source[colon.range.end..returned.range.start];
+    let body = &source[first.range.start..last.range.end];
+    if body.contains(['\r', '\n']) {
+        return None;
+    }
+    let gap = &source[colon.range.end..first.range.start];
     let gap = gap.trim_start_matches([' ', '\t']);
     let indentation = gap
         .strip_prefix("\r\n")
@@ -109,7 +129,7 @@ fn guard_edit(node: Node<'_>, source: &str, options: &Options) -> Option<Span> {
     if indentation.is_empty() || !indentation.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
         return None;
     }
-    let tail = &source[returned.range.end..];
+    let tail = &source[last.range.end..];
     let tail = &tail[..tail.find(['\r', '\n']).unwrap_or(tail.len())];
     if !tail.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
         return None;
@@ -123,13 +143,12 @@ fn guard_edit(node: Node<'_>, source: &str, options: &Options) -> Option<Span> {
             K::LineComment | K::DocComment | K::RegionComment | K::EndRegionComment
         ) {
             let comment_indent = &source[line_start(source, token.range.start)..token.range.start];
-            if token.range.start < returned.range.end || comment_indent.len() > indent.len() {
+            if token.range.start < last.range.end || comment_indent.len() > indent.len() {
                 return None;
             }
         }
     }
-    let width = visual_width(&format!("{header} return"), options.tab_width);
-    (width <= options.line_width).then_some(Span::new(colon.range.end, returned.range.start))
+    Some(Span::new(colon.range.end, first.range.start))
 }
 
 pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxError> {
@@ -149,12 +168,12 @@ pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxEr
     for node in parsed
         .root()
         .descendants()
-        .filter(|node| node.kind() == K::IfStmt)
+        .filter(|node| suite_owner(node.kind()))
     {
         if disabled(&disabled_ranges, node.range()) {
             continue;
         }
-        if let Some(edit) = guard_edit(node, source, options) {
+        if let Some(edit) = inline_suite_edit(node, source) {
             output.push_str(&source[cursor..edit.start]);
             output.push(' ');
             cursor = edit.end;
@@ -163,7 +182,131 @@ pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxEr
     output.push_str(&source[cursor..]);
     let spaced = normalize_inline_spacing(&output)?;
     let normalized = normalize_whitespace(&spaced)?;
-    wrap_call_arguments(&normalized, options)
+    enforce_line_width(&normalized, options)
+}
+
+fn suite_owner(kind: K) -> bool {
+    matches!(
+        kind,
+        K::FuncDecl
+            | K::IfStmt
+            | K::ElifClause
+            | K::ElseClause
+            | K::ForStmt
+            | K::WhileStmt
+            | K::MatchArm
+            | K::LambdaExpr
+            | K::Getter
+            | K::Setter
+    )
+}
+
+fn enforce_line_width(source: &str, options: &Options) -> Result<String, SyntaxError> {
+    let expanded = expand_over_width_suites(source, options)?;
+    wrap_call_arguments(&expanded, options)
+}
+
+fn expand_over_width_suites(source: &str, options: &Options) -> Result<String, SyntaxError> {
+    let parsed = parse(source);
+    if let Some(error) = parsed.errors().first() {
+        return Err(error.clone());
+    }
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let disabled_ranges = disabled_ranges(source);
+    let mut edits = Vec::new();
+    for node in parsed
+        .root()
+        .descendants()
+        .filter(|node| suite_owner(node.kind()))
+    {
+        if disabled(&disabled_ranges, node.range()) {
+            continue;
+        }
+        let Some(block) = node.children().find(|child| child.kind() == K::Block) else {
+            continue;
+        };
+        let mut statements = block.children();
+        let Some(statement) = statements.next() else {
+            continue;
+        };
+        if !inlineable_statement(statement.kind()) || statements.next().is_some() {
+            continue;
+        }
+        let Some(colon) = node
+            .children_with_tokens()
+            .filter_map(|element| match element {
+                Element::Token(token) if token.kind == K::Colon => Some(token),
+                _ => None,
+            })
+            .rfind(|token| token.range.end <= block.range().start)
+        else {
+            continue;
+        };
+        let Some(first) = statement.tokens().find(|token| significant(token.kind)) else {
+            continue;
+        };
+        let Some(last) = statement
+            .tokens()
+            .filter(|token| significant(token.kind))
+            .last()
+        else {
+            continue;
+        };
+        let Some(owner_start) = node
+            .tokens()
+            .find(|token| significant(token.kind))
+            .map(|token| token.range.start)
+        else {
+            continue;
+        };
+        let start = line_start(source, owner_start);
+        let indent = &source[start..owner_start];
+        let gap = &source[colon.range.end..first.range.start];
+        let tail = &source[last.range.end..line_end(source, last.range.end)];
+        let unsafe_tokens = block.tokens().any(|token| {
+            if token.kind == K::Semicolon {
+                return true;
+            }
+            if matches!(
+                token.kind,
+                K::LineComment | K::DocComment | K::RegionComment | K::EndRegionComment
+            ) {
+                let comment_indent =
+                    &source[line_start(source, token.range.start)..token.range.start];
+                return token.range.start < last.range.end || comment_indent.len() > indent.len();
+            }
+            false
+        });
+        if !indent.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            || !gap.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            || !tail
+                .trim_end_matches(['\r', '\n'])
+                .bytes()
+                .all(|byte| matches!(byte, b' ' | b'\t'))
+            || source[first.range.start..last.range.end].contains(['\r', '\n'])
+            || unsafe_tokens
+        {
+            continue;
+        }
+        let line = source[start..line_end(source, last.range.end)].trim_end_matches(['\r', '\n']);
+        if visual_width(line, options.tab_width) > options.line_width {
+            edits.push((
+                colon.range.end,
+                first.range.start,
+                format!("{newline}{indent}\t"),
+            ));
+        }
+    }
+    let mut output = source.to_owned();
+    edits.sort_by_key(|edit| edit.0);
+    for (start, end, replacement) in edits.into_iter().rev() {
+        output.replace_range(start..end, &replacement);
+    }
+    Ok(output)
 }
 
 fn wrap_call_arguments(source: &str, options: &Options) -> Result<String, SyntaxError> {

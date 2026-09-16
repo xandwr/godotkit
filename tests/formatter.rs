@@ -9,6 +9,9 @@ fn script(body: &str, indent: &str) -> String {
     }
     let newline = if body.contains("\r\n") { "\r\n" } else { "\n" };
     let mut source = format!("func f():{newline}");
+    source.push_str(indent);
+    source.push_str("pass");
+    source.push_str(newline);
     for line in body.split_inclusive('\n') {
         source.push_str(indent);
         source.push_str(line);
@@ -97,14 +100,14 @@ fn preserves_comments_and_other_statements() {
         "if ready:\n    # reason\n    return\n",
         "if ready:\n    return\n    # reason\n",
         "if ready:\n    return\n    work()\n",
-        "if ready:\n    return value\n",
-        "if ready:\n    break\n",
         "if ready:\n\n    return\n",
         "if ready: return\n",
         "if ready:\n    return;\n",
     ] {
         check(source, source);
     }
+    check("if ready:\n    return value\n", "if ready: return value\n");
+    check("if ready:\n    break\n", "if ready: break\n");
 }
 
 #[test]
@@ -133,7 +136,7 @@ fn handles_adjacent_guards_and_else() {
     );
     check(
         "if a:\n    return\nelse:\n    work()\n",
-        "if a: return\nelse:\n    work()\n",
+        "if a: return\nelse: work()\n",
     );
 }
 
@@ -216,7 +219,7 @@ fn rejects_invalid_syntax_even_after_a_valid_guard() {
 fn preserves_branch_boundaries_and_statement_separators() {
     check(
         "if a:\n    return\nelif b:\n    return\nelse:\n    if c:\n        return\n",
-        "if a: return\nelif b:\n    return\nelse:\n    if c: return\n",
+        "if a: return\nelif b: return\nelse:\n    if c: return\n",
     );
     for source in [
         "if a:\n    return; work()\n",
@@ -238,7 +241,7 @@ fn formats_guards_in_lambdas_and_match_arms() {
     );
     check(
         "match value:\n    1:\n        if ready:\n            return\n    _:\n        pass\n",
-        "match value:\n    1:\n        if ready: return\n    _:\n        pass\n",
+        "match value:\n    1:\n        if ready: return\n    _: pass\n",
     );
 }
 
@@ -256,7 +259,7 @@ fn exact(before: &str, after: &str) {
 fn cleans_character_script_spacing() {
     exact(
         "# autoload\nextends Node2D\n\n@onready var instance_container: Node2D = %CharacterInstances\nvar _live_instances: Array[Node2D] = []\nfunc spawn_character(definition_path: String):\n  var _ci = CharacterSpawner.build_character_from_file(definition_path)  \n  \n  _live_instances.append(_ci)\n  instance_container.add_child(_ci)\n  \nfunc clear_instances() -> void:\n  _live_instances.clear()\n\n\n",
-        "# autoload\nextends Node2D\n\nvar _live_instances: Array[Node2D] = []\n\n@onready var instance_container: Node2D = %CharacterInstances\n\n\nfunc spawn_character(definition_path: String):\n\tvar _ci = CharacterSpawner.build_character_from_file(definition_path)\n\n\t_live_instances.append(_ci)\n\tinstance_container.add_child(_ci)\n\n\nfunc clear_instances() -> void:\n\t_live_instances.clear()\n",
+        "# autoload\nextends Node2D\n\nvar _live_instances: Array[Node2D] = []\n\n@onready var instance_container: Node2D = %CharacterInstances\n\n\nfunc spawn_character(definition_path: String):\n\tvar _ci = CharacterSpawner.build_character_from_file(definition_path)\n\n\t_live_instances.append(_ci)\n\tinstance_container.add_child(_ci)\n\n\nfunc clear_instances() -> void: _live_instances.clear()\n",
     );
 }
 
@@ -264,7 +267,7 @@ fn cleans_character_script_spacing() {
 fn orders_fields_with_their_annotations_and_comments() {
     exact(
         "extends Node\nvar value = 1\n# Scene node\n@onready var child = $Child\n@export_range(0, 10)\nvar speed = 2\nconst LIMIT = 10\nconst MINIMUM = 0\nvar _internal = 3\nfunc run():\n    pass\n",
-        "extends Node\n\nconst LIMIT = 10\nconst MINIMUM = 0\n\n@export_range(0, 10)\nvar speed = 2\n\nvar value = 1\n\nvar _internal = 3\n\n# Scene node\n@onready var child = $Child\n\n\nfunc run():\n\tpass\n",
+        "extends Node\n\nconst LIMIT = 10\nconst MINIMUM = 0\n\n@export_range(0, 10)\nvar speed = 2\n\nvar value = 1\n\nvar _internal = 3\n\n# Scene node\n@onready var child = $Child\n\n\nfunc run(): pass\n",
     );
 }
 
@@ -272,7 +275,7 @@ fn orders_fields_with_their_annotations_and_comments() {
 fn preserves_semantic_groups_and_function_documentation() {
     exact(
         "var a = 1\nvar b = 2\n\n\nvar c = 3\n## Does work\n@rpc\nfunc run():\n    pass\n## Stops work\nfunc stop():\n    pass\n",
-        "var a = 1\nvar b = 2\n\nvar c = 3\n\n\n## Does work\n@rpc\nfunc run():\n\tpass\n\n\n## Stops work\nfunc stop():\n\tpass\n",
+        "var a = 1\nvar b = 2\n\nvar c = 3\n\n\n## Does work\n@rpc\nfunc run(): pass\n\n\n## Stops work\nfunc stop(): pass\n",
     );
 }
 
@@ -281,7 +284,7 @@ fn cleans_nested_classes_and_empty_files() {
     exact(" \n\t\n", "");
     exact(
         "class Inner:\n  var a = 1\n  var _b = 2\n  func run():\n    pass\n  func stop():\n    pass\n",
-        "class Inner:\n\tvar a = 1\n\n\tvar _b = 2\n\n\n\tfunc run():\n\t\tpass\n\n\n\tfunc stop():\n\t\tpass\n",
+        "class Inner:\n\tvar a = 1\n\n\tvar _b = 2\n\n\n\tfunc run(): pass\n\n\n\tfunc stop(): pass\n",
     );
 }
 
@@ -305,7 +308,7 @@ fn respects_export_groups_and_groups_export_variants() {
 fn normalizes_independent_indent_widths_and_lambda_suites() {
     exact(
         "func first():\n  if ready:\n    work()\nfunc second():\n    work()\n",
-        "func first():\n\tif ready:\n\t\twork()\n\n\nfunc second():\n\twork()\n",
+        "func first():\n\tif ready: work()\n\n\nfunc second(): work()\n",
     );
     exact(
         "var callbacks = [\n    func():\n        work(),\n]\n",
@@ -403,4 +406,36 @@ fn leaves_calls_at_the_width_limit_inline() {
         ..Options::default()
     };
     assert_eq!(format_source(source, &options).unwrap(), source);
+}
+
+#[test]
+fn compacts_single_simple_statement_suites() {
+    exact(
+        "func stub() -> void:\n  pass\nfunc identity(value: int) -> int:\n  return value\nfunc execute() -> void:\n  work()\n",
+        "func stub() -> void: pass\n\n\nfunc identity(value: int) -> int: return value\n\n\nfunc execute() -> void: work()\n",
+    );
+    exact(
+        "var value:\n  get:\n    return backing\n  set(new_value):\n    backing=new_value\n",
+        "var value:\n\tget: return backing\n\tset(new_value): backing = new_value\n",
+    );
+    check(
+        "if ready:\n    pass\nelif waiting:\n    return value\nelse:\n    work()\nfor item in items:\n    inspect(item)\nwhile running:\n    break\n",
+        "if ready: pass\nelif waiting: return value\nelse: work()\nfor item in items: inspect(item)\nwhile running: break\n",
+    );
+}
+
+#[test]
+fn column_wrapping_is_the_terminal_formatting_phase() {
+    let source = "func calculate() -> float:\n\treturn lerp_angle(first_really_long_parameter, second_really_long_parameter, third_really_long_parameter)\n";
+    let inline = "func calculate() -> float: return lerp_angle(first_really_long_parameter, second_really_long_parameter, third_really_long_parameter)\n";
+    let expected = "func calculate() -> float:\n\treturn lerp_angle(\n\t\tfirst_really_long_parameter,\n\t\tsecond_really_long_parameter,\n\t\tthird_really_long_parameter,\n\t)\n";
+    let options = Options {
+        line_width: 60,
+        ..Options::default()
+    };
+    let formatted = format_source(source, &options).unwrap();
+    assert_eq!(formatted, expected);
+    assert_eq!(format_source(inline, &options).unwrap(), expected);
+    assert_eq!(format_source(&formatted, &options).unwrap(), formatted);
+    assert!(parse(&formatted).is_valid());
 }

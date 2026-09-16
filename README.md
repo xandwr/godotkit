@@ -1,8 +1,8 @@
 # gdkit
 
-A Rust formatter targeting GDScript 4.7.2. Normalizes whitespace and orders fields using gdview's lossless syntax tree,
-and compacts bare-return `if` guards. Inputs
-with parser diagnostics are rejected before producing output or writing files.
+A Rust formatter targeting GDScript 4.7.2. Normalizes whitespace, orders fields,
+and compacts single-statement suites using gdview's lossless syntax tree. Inputs with
+parser diagnostics are rejected before producing output or writing files.
 
 ```sh
 cargo run -- format script.gd
@@ -760,8 +760,9 @@ File inputs are replaced atomically in place. Omit the path or use `-` to read
 stdin and write the formatted source to stdout. `--check` does not write and exits
 1 for changes; errors exit 2. Line width defaults to 100 columns (`--line-width`);
 tabs count to the next multiple of 4. Calls that exceed the limit expand to one
-argument per line with a trailing comma. Guards with comments or multiline
-conditions stay unchanged. The ignored test needs Godot 4.7.2.
+argument per line with a trailing comma. Single simple statements compact onto
+their suite header when the result fits. Comments, semicolons, multiline bodies,
+and multi-statement suites stay expanded. The ignored test needs Godot 4.7.2.
 
 Run `format-project` from a directory containing `project.godot` to recursively
 format every non-ignored `.gd` file in that project. Symlinked files and directories
@@ -770,14 +771,15 @@ mode exits 1 if any script would change without writing to the project.
 
 `formatter::format_source` returns `Result<String, syntax::SyntaxError>`, reporting
 the first parser diagnostic with its byte range. It expects a complete script;
-statement fragments must be placed inside a function. Guard selection uses syntax
-blocks and return statements. No legacy lexer or fallback formatting path remains.
+statement fragments must be placed inside a function. Suite selection uses syntax
+blocks and statement nodes. No legacy lexer or fallback formatting path remains.
 
 Formatting uses tabs for indentation, removes trailing whitespace and outer blank
 lines, normalizes spacing around operators, commas, type annotations, calls,
 collections, and inline comments, and collapses extra blank lines inside
 functions. Long calls and any nested calls that remain over width are wrapped
-recursively. Multiline arrays, dictionaries, and enums receive trailing commas;
+recursively as the terminal formatting phase, after suite compaction and other
+rewrites. Multiline arrays, dictionaries, and enums receive trailing commas;
 single-line collections do not retain them. Functions have two blank lines between
 them and after preceding fields. Field categories have one blank line
 between them, including public/private and static/instance boundaries. Existing
