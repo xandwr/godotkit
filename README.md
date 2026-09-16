@@ -758,9 +758,10 @@ are shown as inherited placeholders when connections are requested.
 
 File inputs are replaced atomically in place. Omit the path or use `-` to read
 stdin and write the formatted source to stdout. `--check` does not write and exits
-1 for changes; errors exit 2. Guard width defaults to 100 columns (`--line-width`);
-tabs count to the next multiple of 4. Guards with comments or multiline conditions
-stay unchanged. The ignored test needs Godot 4.7.2.
+1 for changes; errors exit 2. Line width defaults to 100 columns (`--line-width`);
+tabs count to the next multiple of 4. Calls that exceed the limit expand to one
+argument per line with a trailing comma. Guards with comments or multiline
+conditions stay unchanged. The ignored test needs Godot 4.7.2.
 
 Run `format-project` from a directory containing `project.godot` to recursively
 format every non-ignored `.gd` file in that project. Symlinked files and directories
@@ -775,9 +776,10 @@ blocks and return statements. No legacy lexer or fallback formatting path remain
 Formatting uses tabs for indentation, removes trailing whitespace and outer blank
 lines, normalizes spacing around operators, commas, type annotations, calls,
 collections, and inline comments, and collapses extra blank lines inside
-functions. Multiline arrays, dictionaries, and enums receive trailing commas;
-single-line collections do not retain them. Functions have two blank lines
-between them and after preceding fields. Field categories have one blank line
+functions. Long calls and any nested calls that remain over width are wrapped
+recursively. Multiline arrays, dictionaries, and enums receive trailing commas;
+single-line collections do not retain them. Functions have two blank lines between
+them and after preceding fields. Field categories have one blank line
 between them, including public/private and static/instance boundaries. Existing
 single blank lines within a category preserve semantic groups.
 

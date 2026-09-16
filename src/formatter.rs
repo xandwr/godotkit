@@ -61,6 +61,17 @@ fn disabled(ranges: &[Span], span: Span) -> bool {
         .any(|range| span.start < range.end && span.end > range.start)
 }
 
+fn visual_width(text: &str, tab_width: usize) -> usize {
+    let tab_width = tab_width.max(1);
+    text.chars().fold(0, |column, ch| {
+        if ch == '\t' {
+            column + tab_width - column % tab_width
+        } else {
+            column + 1
+        }
+    })
+}
+
 fn guard_edit(node: Node<'_>, source: &str, options: &Options) -> Option<Span> {
     let block = node.children().find(|child| child.kind() == K::Block)?;
     let mut statements = block.children();
@@ -117,17 +128,7 @@ fn guard_edit(node: Node<'_>, source: &str, options: &Options) -> Option<Span> {
             }
         }
     }
-    let tab_width = options.tab_width.max(1);
-    let width = header
-        .chars()
-        .chain(" return".chars())
-        .fold(0, |column, ch| {
-            if ch == '\t' {
-                column + tab_width - column % tab_width
-            } else {
-                column + 1
-            }
-        });
+    let width = visual_width(&format!("{header} return"), options.tab_width);
     (width <= options.line_width).then_some(Span::new(colon.range.end, returned.range.start))
 }
 
@@ -161,7 +162,149 @@ pub fn format_source(source: &str, options: &Options) -> Result<String, SyntaxEr
     }
     output.push_str(&source[cursor..]);
     let spaced = normalize_inline_spacing(&output)?;
-    normalize_whitespace(&spaced)
+    let normalized = normalize_whitespace(&spaced)?;
+    wrap_call_arguments(&normalized, options)
+}
+
+fn wrap_call_arguments(source: &str, options: &Options) -> Result<String, SyntaxError> {
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut output = source.to_owned();
+    loop {
+        let parsed = parse(&output);
+        if let Some(error) = parsed.errors().first() {
+            return Err(error.clone());
+        }
+        let disabled_ranges = disabled_ranges(&output);
+        let mut candidates = Vec::new();
+        for node in parsed
+            .root()
+            .descendants()
+            .filter(|node| node.kind() == K::ArgList)
+        {
+            let range = node.range();
+            if disabled(&disabled_ranges, range)
+                || output[range.start..range.end].contains(['\r', '\n'])
+                || node.children().next().is_none()
+            {
+                continue;
+            }
+            let start = line_start(&output, range.start);
+            let end = line_end(&output, range.end);
+            let line = output[start..end].trim_end_matches(['\r', '\n']);
+            if visual_width(line, options.tab_width) > options.line_width {
+                candidates.push(node);
+            }
+        }
+        let mut edits = Vec::new();
+        for node in candidates.iter().copied().filter(|node| {
+            !candidates.iter().any(|other| {
+                other.range().start < node.range().start && other.range().end > node.range().end
+            })
+        }) {
+            let range = node.range();
+            let start = line_start(&output, range.start);
+            let before = &output[start..range.start];
+            let leading = &before[..before.len() - before.trim_start_matches([' ', '\t']).len()];
+            let argument_indent = format!("{leading}\t");
+            let arguments: Vec<_> = node.children().collect();
+            let mut replacement = String::from("(");
+            replacement.push_str(newline);
+            for argument in arguments {
+                replacement.push_str(&argument_indent);
+                let range = argument.range();
+                replacement.push_str(output[range.start..range.end].trim_matches([' ', '\t']));
+                replacement.push(',');
+                replacement.push_str(newline);
+            }
+            replacement.push_str(leading);
+            replacement.push(')');
+            edits.push((range.start, range.end, replacement));
+        }
+        if edits.is_empty() {
+            break;
+        }
+        edits.sort_by_key(|edit| edit.0);
+        for (start, end, replacement) in edits.into_iter().rev() {
+            output.replace_range(start..end, &replacement);
+        }
+    }
+    normalize_call_argument_indentation(&output)
+}
+
+fn normalize_call_argument_indentation(source: &str) -> Result<String, SyntaxError> {
+    let parsed = parse(source);
+    if let Some(error) = parsed.errors().first() {
+        return Err(error.clone());
+    }
+    let disabled_ranges = disabled_ranges(source);
+    let mut edits = Vec::new();
+    for node in parsed
+        .root()
+        .descendants()
+        .filter(|node| node.kind() == K::ArgList)
+    {
+        let range = node.range();
+        if disabled(&disabled_ranges, range)
+            || !source[range.start..range.end].contains(['\r', '\n'])
+        {
+            continue;
+        }
+        let start = line_start(source, range.start);
+        let before = &source[start..range.start];
+        let leading = &before[..before.len() - before.trim_start_matches([' ', '\t']).len()];
+        let argument_indent = format!("{leading}\t");
+        let arguments: Vec<_> = node.children().collect();
+        let close = node
+            .children_with_tokens()
+            .find_map(|element| match element {
+                Element::Token(token) if token.kind == K::RParen => Some(token),
+                _ => None,
+            })
+            .unwrap();
+        let mut prefixes = Vec::new();
+        for argument in arguments {
+            let argument_start = argument
+                .tokens()
+                .find(|token| significant(token.kind))
+                .unwrap()
+                .range
+                .start;
+            let start = line_start(source, argument_start);
+            let prefix = &source[start..argument_start];
+            if start == line_start(source, range.start)
+                || !prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            {
+                prefixes.clear();
+                break;
+            }
+            prefixes.push((start, argument_start, argument_indent.clone()));
+        }
+        if prefixes.is_empty() {
+            continue;
+        }
+        let close_start = line_start(source, close.range.start);
+        let close_prefix = &source[close_start..close.range.start];
+        if close_start == line_start(source, range.start)
+            || !close_prefix
+                .bytes()
+                .all(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            continue;
+        }
+        edits.extend(prefixes);
+        edits.push((close_start, close.range.start, leading.to_owned()));
+    }
+    let mut output = source.to_owned();
+    edits.sort_by_key(|edit| edit.0);
+    edits.dedup_by_key(|edit| (edit.0, edit.1));
+    for (start, end, replacement) in edits.into_iter().rev() {
+        output.replace_range(start..end, &replacement);
+    }
+    Ok(output)
 }
 
 fn normalize_trailing_commas(source: &str) -> Result<String, SyntaxError> {

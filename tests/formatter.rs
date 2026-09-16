@@ -368,3 +368,39 @@ fn normalizes_collection_trailing_commas() {
         "var single = [1, 2]\nvar values = [\n\t1,\n\t2,\n]\nvar mapping = {\n\t\"value\": 1, # note\n}\n\nenum State { IDLE, RUN }\n",
     );
 }
+
+#[test]
+fn wraps_long_call_arguments_one_per_line() {
+    exact(
+        "func f():\n  mesh.rotation.y=lerp_angle(mesh.rotation.y,wheel_turn_degrees*(PI/180),wheel_turn_speed*delta)\n",
+        "func f():\n\tmesh.rotation.y = lerp_angle(\n\t\tmesh.rotation.y,\n\t\twheel_turn_degrees * (PI / 180),\n\t\twheel_turn_speed * delta,\n\t)\n",
+    );
+    exact(
+        "func f():\r\n  result=calculate_really_long_value(first_parameter,second_parameter,third_parameter) # retained\r\n",
+        "func f():\r\n\tresult = calculate_really_long_value(\r\n\t\tfirst_parameter,\r\n\t\tsecond_parameter,\r\n\t\tthird_parameter,\r\n\t) # retained\r\n",
+    );
+}
+
+#[test]
+fn recursively_wraps_nested_calls_that_remain_too_wide() {
+    let source = "func f():\n\tvar result = outer(inner(first_value, second_value), third_value)\n";
+    let expected = "func f():\n\tvar result = outer(\n\t\tinner(\n\t\t\tfirst_value,\n\t\t\tsecond_value,\n\t\t),\n\t\tthird_value,\n\t)\n";
+    let options = Options {
+        line_width: 30,
+        ..Options::default()
+    };
+    let formatted = format_source(source, &options).unwrap();
+    assert_eq!(formatted, expected);
+    assert_eq!(format_source(&formatted, &options).unwrap(), formatted);
+    assert!(parse(&formatted).is_valid());
+}
+
+#[test]
+fn leaves_calls_at_the_width_limit_inline() {
+    let source = "func f():\n\tprint(first, second)\n";
+    let options = Options {
+        line_width: 25,
+        ..Options::default()
+    };
+    assert_eq!(format_source(source, &options).unwrap(), source);
+}
