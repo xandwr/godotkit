@@ -784,16 +784,16 @@ single-line collections do not retain them. Functions have two blank lines betwe
 them and after preceding fields. Field categories have one blank line between
 them. Existing single blank lines within a category preserve semantic groups.
 
-All script-scoped fields move above signals, enums, functions, and inner classes.
-They are stably ordered as constants, exports, onready variables, public variables,
-then underscore-prefixed private variables. Static variables follow the same
-public/private name rule. Export group/category annotations and attached comments
-move with their fields. Script and inner-class documentation remains attached to
-its class. Ordering can change initializer execution order across categories;
-within each category, declaration order is preserved. String contents and existing
-line endings are preserved. Missing final newlines remain missing unless field
-reordering requires a line separator. Invalid input is rejected, including mixed
-indentation diagnosed by the parser.
+Script-scoped signals and fields move above enums, functions, and inner classes.
+They are stably ordered as signals, constants, exports, onready variables, public
+variables, then underscore-prefixed private variables. Static variables follow the
+same public/private name rule. Export group/category annotations and attached
+comments move with their declarations. Script and inner-class documentation
+remains attached to its class. Ordering can change initializer execution order
+across categories; within each category, declaration order is preserved. String
+contents and existing line endings are preserved. Missing final newlines remain
+missing unless field reordering requires a line separator. Invalid input is
+rejected, including mixed indentation diagnosed by the parser.
 
 Formatting can be disabled for a region without weakening syntax validation:
 

@@ -341,10 +341,10 @@ fn follows_field_category_and_visibility_order() {
 }
 
 #[test]
-fn moves_all_script_fields_before_other_declarations() {
+fn moves_all_script_signals_and_fields_before_other_declarations() {
     exact(
-        "extends Node\nsignal changed\nfunc run():\n    pass\nvar public = 1\nconst LIMIT = 2\n@onready var child = $Child\nvar _private = 3\n@export var speed = 4\nenum State { IDLE }\n",
-        "extends Node\n\nconst LIMIT = 2\n\n@export var speed = 4\n\n@onready var child = $Child\n\nvar public = 1\n\nvar _private = 3\n\nsignal changed\n\n\nfunc run(): pass\n\n\nenum State { IDLE }\n",
+        "extends Node\nsignal changed\n\nsignal requested\nfunc run():\n    pass\nvar public = 1\nconst LIMIT = 2\n@onready var child = $Child\nvar _private = 3\n@export var speed = 4\n# Completion signal\nsignal completed(value: int)\nenum State { IDLE }\n",
+        "extends Node\n\nsignal changed\n\nsignal requested\n# Completion signal\nsignal completed(value: int)\n\nconst LIMIT = 2\n\n@export var speed = 4\n\n@onready var child = $Child\n\nvar public = 1\n\nvar _private = 3\n\n\nfunc run(): pass\n\n\nenum State { IDLE }\n",
     );
 }
 

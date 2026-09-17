@@ -61,17 +61,19 @@ fn disabled(ranges: &[Span], span: Span) -> bool {
         .any(|range| span.start < range.end && span.end > range.start)
 }
 
-fn field_category(kind: K, exported: bool, onready: bool, private: bool) -> usize {
-    if kind == K::ConstDecl {
+fn script_member_category(kind: K, exported: bool, onready: bool, private: bool) -> usize {
+    if kind == K::SignalDecl {
         0
-    } else if exported {
+    } else if kind == K::ConstDecl {
         1
-    } else if onready {
+    } else if exported {
         2
-    } else if private {
-        4
-    } else {
+    } else if onready {
         3
+    } else if private {
+        5
+    } else {
+        4
     }
 }
 
@@ -942,10 +944,10 @@ fn normalize_whitespace(source: &str) -> Result<String, SyntaxError> {
                 .any(|name: &String| name == "export" || name.starts_with("export_"));
             let onready = annotations.iter().any(|name| name == "onready");
             annotations.clear();
-            let category = if matches!(member.kind(), K::VarDecl | K::ConstDecl) {
+            let category = if matches!(member.kind(), K::SignalDecl | K::VarDecl | K::ConstDecl) {
                 (
                     K::VarDecl,
-                    field_category(member.kind(), exported, onready, private),
+                    script_member_category(member.kind(), exported, onready, private),
                 )
             } else {
                 (member.kind(), 0)
@@ -1081,7 +1083,7 @@ fn reorder_script_fields(source: &str) -> String {
                     .unwrap();
                 let end = line_end(source, last.range.end);
                 body_start.get_or_insert(start);
-                fields.push((start, end, 1));
+                fields.push((start, end, 2));
                 previous_end = end;
                 has_body_member = true;
                 exported = false;
@@ -1112,7 +1114,7 @@ fn reorder_script_fields(source: &str) -> String {
                     .find(|token| token.kind == K::Ident)
                     .is_some_and(|token| source[token.range].starts_with('_'))
             });
-        if matches!(member.kind(), K::VarDecl | K::ConstDecl)
+        if matches!(member.kind(), K::SignalDecl | K::VarDecl | K::ConstDecl)
             && source[line_start(source, at)..at].trim().is_empty()
             && !source[last.range.end..end].trim().starts_with(';')
         {
@@ -1121,7 +1123,7 @@ fn reorder_script_fields(source: &str) -> String {
             fields.push((
                 start,
                 end,
-                field_category(member.kind(), exported, onready, private),
+                script_member_category(member.kind(), exported, onready, private),
             ));
         }
         exported = false;
@@ -1291,7 +1293,7 @@ fn reorder_fields(source: &str) -> String {
                 fields.push((
                     start,
                     end,
-                    field_category(member.kind(), exported, onready, private),
+                    script_member_category(member.kind(), exported, onready, private),
                 ));
             } else {
                 flush(&mut fields, &mut edits);
