@@ -3,6 +3,7 @@ name = "gdkit"
 version = "0.1.0"
 edition = "2024"
 description = "A lightweight Rust utility belt for Godot."
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 anstream = "1.0"
