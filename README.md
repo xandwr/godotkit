@@ -4,7 +4,7 @@ A Rust command-line toolkit for Godot 4 projects. gdkit formats GDScript, valida
 that a project actually loads in a real engine, reflects over the engine and
 project API, authors `.tres` resources from JSON, inspects scenes and multiplayer
 topology offline, and manages durable runtime sessions and repeatable multiplayer
-scenarios — all driven by a single engine executable you associate with the project.
+scenarios, all driven by a single engine executable you associate with the project.
 
 Most commands that touch Godot run against the engine you configure rather than
 guessing from a bundled copy, so results always describe the engine your project
@@ -12,31 +12,31 @@ really uses.
 
 ## Highlights
 
-- **Formatter** — opinionated GDScript formatting built on a lossless syntax tree
+- **Formatter**: opinionated GDScript formatting built on a lossless syntax tree
   (comments and string contents preserved). Single file, stdin, or whole project,
   with `--check` for CI.
-- **Project checker** — copies the project to a scratch directory, imports it with
+- **Project checker**: copies the project to a scratch directory, imports it with
   the configured engine, loads every script, scene, resource, and shader, and
   reports structured diagnostics. Optionally runs headless gameplay smoke tests
   of chosen scenes and project-owned `SceneTree` test scripts.
-- **API queries** — reflect the configured engine's `ClassDB`, including
+- **API queries**: reflect the configured engine's `ClassDB`, including
   GDExtension-registered classes, merged with a static index of the project's own
   `class_name` scripts. Look up classes, members, and inheritance, or search by name.
-- **Resource authoring** — create or interrogate serialized Resources from
+- **Resource authoring**: create or interrogate serialized Resources from
   declarative JSON specs, with full-precision Variant encoding, verified writes,
   and schema discovery (`resource schema`) for tooling and agents.
-- **Multiplayer analysis** — a static report of the project's RPC configuration,
+- **Multiplayer analysis**: a static report of the project's RPC configuration,
   spawner/synchronizer setup, and connection lifecycle (`net`), plus live
   observation of a running session's peers, authority, and RPC traffic (`inspect --net`).
-- **Runtime sessions** — launch, log, restart, and stop named game processes with
+- **Runtime sessions**: launch, log, restart, and stop named game processes with
   immutable per-launch records; observe live sessions through project-defined
   state checkpoints.
-- **Scenarios** — declarative multiplayer topologies (dedicated ENet or Steam P2P)
+- **Scenarios**: declarative multiplayer topologies (dedicated ENet or Steam P2P)
   with participant roles, readiness checkpoints, dynamic ports, and deterministic
   late-join / disconnect / crash control.
-- **Scene inspection** — print a `.tscn` node tree offline, with packed-scene and
+- **Scene inspection**: print a `.tscn` node tree offline, with packed-scene and
   inherited-scene expansion, signal connections, and groups. No engine required.
-- **Cache management** — refresh, rebuild, or clean Godot's derived caches
+- **Cache management**: refresh, rebuild, or clean Godot's derived caches
   (UIDs, script classes, imports) after moving files outside the editor.
 
 ## Install
@@ -68,8 +68,8 @@ gdkit check
 
 `init` writes a `gdkit.toml` that pins the engine executable (a relative path
 resolves against the file, so the config is portable in monorepos). Engine
-selection precedence everywhere is `--godot` flag → `GDKIT_GODOT` environment
-variable → `gdkit.toml`. The engine is probed once per project and cached; run
+selection precedence everywhere is `--godot` flag -> `GDKIT_GODOT` environment
+variable -> `gdkit.toml`. The engine is probed once per project and cached; run
 `gdkit doctor` to see the resolved engine, version, and cache health at any time.
 
 ```sh
@@ -81,14 +81,14 @@ gdkit init --godot ../engine/bin/godot.windows.editor.x86_64.console.exe
 ```sh
 gdkit format script.gd            # rewrite in place (atomic)
 gdkit format script.gd --check    # exit 1 if it would change
-gdkit format - < script.gd        # stdin → stdout
+gdkit format - < script.gd        # stdin -> stdout
 gdkit format-project              # every non-ignored .gd under project.godot
 ```
 
 Line width defaults to 100 columns (`--line-width`); indentation uses tabs.
 Long calls wrap one argument per line with a trailing comma. Script-scoped
 signals and fields are stably reordered above enums, functions, and inner
-classes as signals → constants → exports → onready → public → private; export
+classes as signals -> constants -> exports -> onready -> public -> private; export
 annotations and comments move with their declarations. Disable formatting for
 a region without weakening syntax validation:
 
@@ -121,7 +121,7 @@ the project's `class_name` declarations against Godot's global script-class
 cache. Exit codes: `0` pass, `1` validation failure, `2` tooling failure.
 
 Scene smoke checks run each scene in a fresh process with the project's autoloads
-and normal runtime warnings — including `_ready()` and whatever I/O the project
+and normal runtime warnings, including `_ready()` and whatever I/O the project
 normally performs. A timeout, nonzero exit, or `ERROR:` output fails the check.
 Per-check artifacts (`report.json`, captured engine output) are kept under
 `.godot/gdkit/checks/`.
@@ -145,7 +145,7 @@ gdkit api search multiplayer               # search native + project names
 
 Class and member lookups include the project's own `class_name` scripts
 (declared members, script inheritance, `res://` locations) alongside the engine's
-native `ClassDB` — including GDExtension classes, because the index runs inside
+native `ClassDB`, including GDExtension classes, because the index runs inside
 the selected project. Member queries suggest nearby names for typos. The native
 index is cached in `.godot/gdkit/api-index.json` and invalidated automatically
 when the engine or extension set changes. Results identify the engine executable
@@ -179,24 +179,24 @@ Specs target one native class or project script. All supported Variant shapes
 are covered: tagged large integers, `StringName`/`NodePath`, vectors, colors,
 transforms, packed arrays, typed arrays, dictionaries, and nested Resource
 graphs via `$ref` and `$resource`. Every value is verified by assigning it,
-saving, and reloading the file without caches — setter transformations or
+saving, and reloading the file without caches: setter transformations or
 serialization precision loss fail the operation instead of silently diverging.
 The destination is published atomically and never overwrites an existing file.
 
 `resource schema` reports each field's type, default, hints, enum choices,
-storage, and accepted inputs — a machine-readable contract aimed at code
+storage, and accepted inputs, a machine-readable contract aimed at code
 generators and autonomous agents.
 
 ## Multiplayer tooling
 
-**Static topology** — `gdkit net` reports the project's authored multiplayer
+**Static topology**: `gdkit net` reports the project's authored multiplayer
 surface without entering its main scene: RPC configuration, call sites,
 spawner/synchronizer contracts, authority assignments, and networked autoloads.
 `gdkit net explain <method> --project game` relates each resolvable RPC call to
 its endpoints, permissions, and the node paths peers must agree on. Results are
 typed observations (unknowns stay explicit), not lint failures.
 
-**Live sessions** — launch, observe, and control named game processes:
+**Live sessions**: launch, observe, and control named game processes:
 
 ```sh
 gdkit run --name server --headless -- --server
@@ -221,7 +221,7 @@ returning JSON-safe snapshots such as `network_session` or `round_state`.
 `inspect --checkpoints --compare` collects the same checkpoints from two live
 sessions and reports differences by JSON Pointer.
 
-**Scenarios** — repeatable multiplayer topologies with roles, readiness
+**Scenarios**: repeatable multiplayer topologies with roles, readiness
 checkpoints, and dynamic ports:
 
 ```toml
@@ -280,7 +280,7 @@ gdkit cache clean game     # also remove imported assets and shader caches
 ```
 
 `cache refresh` (alias: `gdkit import`) runs a headless editor import to
-completion and persists Godot's UID, script-class, and import caches — useful
+completion and persists Godot's UID, script-class, and import caches, useful
 after refactors done outside the editor. Move a script's `.uid` sidecar with it
 to preserve identity. `cache clean --dry-run` previews removals; every removed
 target is printed.
@@ -335,11 +335,11 @@ reproducible test dependency; normal operation never reads it. On Windows,
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your
 call. The gdview syntax frontend this project re-exports keeps its own MIT
-notice — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+notice, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## Status
 
 Pre-1.0. Command surface and JSON report formats may change between minor
 versions; report outputs carry version fields to detect mismatches. The
 [development roadmap](docs/poweruser-roadmap.md) documents researched future
-directions — commands described there are not yet available.
+directions; commands described there are not yet available.
