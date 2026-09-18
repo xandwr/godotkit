@@ -19,6 +19,7 @@ use crate::{cli::ApiArgs, engine, project_files};
 
 const RESULT_PREFIX: &str = "GDKIT_API_RESULT:";
 const SEARCH_LIMIT: usize = 50;
+const PROPERTY_USAGE_NIL_IS_VARIANT: u32 = 1 << 17;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProjectMemberKind {
@@ -109,6 +110,7 @@ struct ApiType {
     #[serde(rename = "type")]
     kind: u32,
     class_name: String,
+    usage: u32,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq)]
@@ -489,7 +491,7 @@ fn type_name(value: &ApiType, return_type: bool) -> String {
         return value.class_name.clone();
     }
     let name = match value.kind {
-        0 if return_type => "void",
+        0 if return_type && value.usage & PROPERTY_USAGE_NIL_IS_VARIANT == 0 => "void",
         0 => "Variant",
         1 => "bool",
         2 => "int",
@@ -1145,6 +1147,7 @@ mod tests {
         ApiType {
             kind,
             class_name: class_name.to_owned(),
+            usage: 0,
         }
     }
 
@@ -1174,6 +1177,10 @@ mod tests {
             type_name(&value_type(2, "PhysicsServer3D.BodyAxis"), false),
             "PhysicsServer3D.BodyAxis"
         );
+        let mut variant_return = value_type(0, "");
+        variant_return.usage = PROPERTY_USAGE_NIL_IS_VARIANT;
+        assert_eq!(type_name(&variant_return, true), "Variant");
+        assert_eq!(type_name(&value_type(0, ""), true), "void");
     }
 
     #[test]

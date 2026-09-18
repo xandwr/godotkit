@@ -39,6 +39,14 @@ fn queries_inherited_native_api_and_suggests_typo_fixes() {
     assert!(method.contains("func move_and_slide() -> bool"));
     assert!(method.contains("Engine "));
 
+    let variant_method = run(&["PhysicsServer3D", "body_get_state"]);
+    assert!(variant_method.status.success());
+    assert!(
+        String::from_utf8(variant_method.stdout)
+            .unwrap()
+            .contains("-> Variant")
+    );
+
     let class = run(&["CharacterBody3D"]);
     assert!(class.status.success());
     let class = String::from_utf8(class.stdout).unwrap();

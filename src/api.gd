@@ -8,6 +8,7 @@ func _type(info: Dictionary) -> Dictionary:
 	return {
 		"type": int(info.get("type", TYPE_NIL)),
 		"class_name": str(info.get("class_name", "")),
+		"usage": int(info.get("usage", 0)),
 	}
 
 
