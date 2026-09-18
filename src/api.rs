@@ -1092,18 +1092,43 @@ fn print_search(
 }
 
 pub(crate) fn run(args: ApiArgs) -> Result<ExitCode, Box<dyn Error>> {
-    if args.query == "search" && args.member.is_none() {
+    if args.query.as_deref() == Some("search") && args.member.is_none() {
         return Err("api search requires a search term".into());
     }
-    let project = engine::project_root(&args.project)?;
+    let project = if args.dump_json {
+        fs::canonicalize(&args.project)?
+    } else {
+        engine::project_root(&args.project)?
+    };
     let engine_path = engine::resolve(&project, args.godot.as_deref())?;
+    if args.dump_json {
+        let index = if project.join("project.godot").is_file() {
+            load_index(&engine_path, &project)?
+        } else {
+            let isolated = crate::check::IsolatedProject::empty()?;
+            query_engine(&engine_path, &isolated.0)?
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": 1,
+                "engine": {"executable": engine_path, "fingerprint": engine::fingerprint(&engine_path)?},
+                "api": index,
+            }))?
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let query = args
+        .query
+        .as_deref()
+        .ok_or("api requires a class, search, or --dump-json")?;
     let index = load_index(&engine_path, &project)?;
     let project_classes = index_project(&project)?;
-    if args.query == "search" {
+    if args.query.as_deref() == Some("search") {
         let term = args.member.as_deref().unwrap();
         return Ok(print_search(&index, &engine_path, &project_classes, term));
     }
-    if let Some(class) = find_project_class(&project_classes, &args.query) {
+    if let Some(class) = find_project_class(&project_classes, query) {
         return Ok(match args.member.as_deref() {
             Some(member) => {
                 print_project_member(&index, &engine_path, &project_classes, class, member)
@@ -1114,16 +1139,16 @@ pub(crate) fn run(args: ApiArgs) -> Result<ExitCode, Box<dyn Error>> {
             }
         });
     }
-    let Some(class) = find_class(&index, &args.query) else {
+    let Some(class) = find_class(&index, query) else {
         engine_header(&index, &engine_path);
-        println!("\nNo native or project class named '{}'.", args.query);
+        println!("\nNo native or project class named '{}'.", query);
         let nearby = suggestions(
             index
                 .classes
                 .iter()
                 .map(|class| class.name.as_str())
                 .chain(project_classes.iter().map(|class| class.name.as_str())),
-            &args.query,
+            query,
         );
         if !nearby.is_empty() {
             println!("Did you mean: {}?", nearby.join(", "));

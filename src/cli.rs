@@ -211,9 +211,17 @@ pub enum NetOutput {
 pub struct ApiArgs {
     #[arg(
         value_name = "CLASS|search",
+        required_unless_present = "dump_json",
+        conflicts_with = "dump_json",
         help = "Native or project class name, or search"
     )]
-    pub query: String,
+    pub query: Option<String>,
+    #[arg(
+        long,
+        conflicts_with = "member",
+        help = "Export the complete reflected native API as JSON"
+    )]
+    pub dump_json: bool,
     #[arg(value_name = "MEMBER|TERM", help = "Member name, or search term")]
     pub member: Option<String>,
     #[arg(long, default_value = ".", help = "Godot project directory")]
@@ -240,6 +248,13 @@ pub struct InitArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "stop_worker",
+        help = "Copy only this file or directory into a minimal project (repeatable; paths relative to project)"
+    )]
+    pub slice: Vec<PathBuf>,
     #[arg(
         long,
         value_enum,

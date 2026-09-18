@@ -135,7 +135,43 @@ message = "ERROR: Script inherits from native type 'MarginContainer', ..."
 source = "res://addons/some_plugin/plugin.gd"
 ```
 
+### Check a script or extracted slice
+
+```sh
+gdkit check game --slice scripts/example.gd
+gdkit check game --slice scripts/domain --slice assets/shared.tres
+gdkit check extracted-directory --slice example.gd --godot /path/to/godot.editor.exe
+```
+
+Repeat `--slice` to explicitly select files or directories relative to the input
+root. Only those sources are copied and imported, preserving their relative paths.
+The scratch project starts with a minimal `project.godot`, without the source
+project's autoloads, plugins, or project settings. Include `--slice project.godot`
+when the slice needs those settings, along with all their required dependencies.
+Dependencies are never added automatically: missing preloads, global classes,
+autoloads, and resources produce normal engine diagnostics. A single script is
+validated, not executed (execution still requires `--script`). The input directory
+need not contain `project.godot`; engine selection and gdkit check policy still
+come from the input root's `gdkit.toml`, environment, or `--godot` as usual.
+Do not select `.godot`, `.git`, parent paths, or symbolic links.
+
 ## API queries
+
+```sh
+gdkit api --dump-json --godot /path/to/godot.editor.exe > api.json
+gdkit api --dump-json --project game > project-engine-api.json
+```
+
+`--dump-json` emits one JSON object with `schema_version`, engine executable and
+fingerprint, and the full `api` index (engine version, classes, parents, methods,
+arguments, defaults, properties, signals, enums, constants, and reflection
+capability flags). No lookup or search limit applies. This is the reflected native
+ClassDB reference, including registered project GDExtensions, not documentation
+prose, examples, built-in Variant types, or project GDScript declarations. Members
+are declared per class; use `parent` to resolve inheritance. It also works outside
+a project with an explicit or environment-selected engine, using an empty scratch
+project. Within a project it uses the same engine-keyed cache as API lookups.
+
 
 ```sh
 gdkit api CharacterBody3D move_and_slide   # signature + full inherited chain

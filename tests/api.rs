@@ -28,6 +28,30 @@ fn queries_inherited_native_api_and_suggests_typo_fixes() {
             .unwrap()
     };
 
+    let dump = run(&["--dump-json"]);
+    assert!(
+        dump.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dump.stderr)
+    );
+    let dump: serde_json::Value = serde_json::from_slice(&dump.stdout).unwrap();
+    assert_eq!(dump["schema_version"], 1);
+    assert!(dump["engine"]["fingerprint"].as_str().unwrap().len() > 10);
+    let classes = dump["api"]["classes"].as_array().unwrap();
+    assert!(classes.len() > 100);
+    let body = classes
+        .iter()
+        .find(|class| class["name"] == "CharacterBody3D")
+        .unwrap();
+    assert!(
+        body["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|method| method["name"] == "move_and_slide")
+    );
+    assert!(!dump["api"]["version"].as_str().unwrap().is_empty());
+
     let method = run(&["CharacterBody3D", "move_and_slide"]);
     assert!(
         method.status.success(),
@@ -95,6 +119,16 @@ fn queries_inherited_native_api_and_suggests_typo_fixes() {
             .unwrap()
             .contains("MatchState.func serialize() -> Dictionary [res://domain.gd:6]")
     );
+
+    fs::remove_file(directory.join("project.godot")).unwrap();
+    let standalone = run(&["--dump-json"]);
+    assert!(
+        standalone.status.success(),
+        "{}",
+        String::from_utf8_lossy(&standalone.stderr)
+    );
+    let standalone: serde_json::Value = serde_json::from_slice(&standalone.stdout).unwrap();
+    assert_eq!(standalone["api"]["classes"], dump["api"]["classes"]);
 
     fs::remove_dir_all(directory).unwrap();
 }

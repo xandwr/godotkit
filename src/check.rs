@@ -227,17 +227,17 @@ impl Drop for TemporaryScript {
     }
 }
 
-struct IsolatedProject(PathBuf);
+pub(crate) struct IsolatedProject(pub(crate) PathBuf);
 
 impl IsolatedProject {
-    fn create(project: &Path) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn empty() -> Result<Self, Box<dyn Error>> {
         for attempt in 0..100 {
             let path =
                 env::temp_dir().join(format!("gdkit-isolated-{}-{attempt}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => {
                     let isolated = Self(path);
-                    copy_project(project, &isolated.0)?;
+                    fs::write(isolated.0.join("project.godot"), "config_version=5\n")?;
                     return Ok(isolated);
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -246,12 +246,63 @@ impl IsolatedProject {
         }
         Err("could not create isolated project directory".into())
     }
+
+    fn create(project: &Path, slice: &[PathBuf]) -> Result<Self, Box<dyn Error>> {
+        let isolated = Self::empty()?;
+        if slice.is_empty() {
+            copy_project(project, &isolated.0)?;
+        } else {
+            copy_slice(project, &isolated.0, slice)?;
+        }
+        Ok(isolated)
+    }
 }
 
 impl Drop for IsolatedProject {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn copy_slice(
+    source: &Path,
+    destination: &Path,
+    selections: &[PathBuf],
+) -> Result<(), Box<dyn Error>> {
+    fs::write(destination.join("project.godot"), "config_version=5\n")?;
+    for selection in selections {
+        if selection.as_os_str().is_empty()
+            || selection
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err("slice paths must be relative paths without . or .. components".into());
+        }
+        let mut selected = source.to_path_buf();
+        for part in selection.components() {
+            let name = part.as_os_str();
+            if name == ".godot" || name == ".git" {
+                return Err("slice paths cannot include .godot or .git".into());
+            }
+            selected.push(name);
+            if fs::symlink_metadata(&selected)?.file_type().is_symlink() {
+                return Err(format!(
+                    "slice paths cannot follow symbolic links: {}",
+                    selected.display()
+                )
+                .into());
+            }
+        }
+        let target = destination.join(selection);
+        if selected.is_dir() {
+            fs::create_dir_all(&target)?;
+            copy_project(&selected, &target)?;
+        } else {
+            fs::create_dir_all(target.parent().ok_or("slice path has no parent")?)?;
+            fs::copy(&selected, &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_project(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
@@ -272,7 +323,7 @@ fn copy_project(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>>
             .into());
         }
         if metadata.is_dir() {
-            fs::create_dir(&destination_path)?;
+            fs::create_dir_all(&destination_path)?;
             copy_project(&source_path, &destination_path)?;
         } else if metadata.is_file() {
             fs::copy(&source_path, &destination_path)?;
@@ -1036,7 +1087,12 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         },
     );
     report.requested_phases = requested_phases(&args);
-    let project = match crate::engine::project_root(&args.project) {
+    let project_result = if args.slice.is_empty() {
+        crate::engine::project_root(&args.project)
+    } else {
+        fs::canonicalize(&args.project).map_err(Into::into)
+    };
+    let project = match project_result {
         Ok(project) => project,
         Err(error) => {
             report.outcome = CheckOutcome::ToolFailed;
@@ -1076,7 +1132,7 @@ pub fn run(args: CheckArgs) -> Result<ExitCode, Box<dyn Error>> {
         "artifacts: {}",
         crate::engine::display_path(&artifacts.directory)
     );
-    let isolated = match IsolatedProject::create(&project) {
+    let isolated = match IsolatedProject::create(&project, &args.slice) {
         Ok(isolated) => isolated,
         Err(error) => {
             report.outcome = CheckOutcome::ToolFailed;

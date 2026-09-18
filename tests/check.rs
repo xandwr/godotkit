@@ -485,3 +485,63 @@ fn engine_configuration_errors_and_precedence() {
     assert!(run(&["init", "--godot", "missing-init"], None).contains("project"));
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+#[ignore = "requires GDKIT_TEST_GODOT pointing to a Godot 4 editor"]
+fn checks_only_explicit_slices_and_reports_missing_dependencies() {
+    let engine = std::env::var_os("GDKIT_TEST_GODOT").expect("set GDKIT_TEST_GODOT");
+    let directory = std::env::temp_dir().join(format!("gdkit-slice-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    fs::create_dir(directory.join("domain")).unwrap();
+    fs::write(
+        directory.join("project.godot"),
+        "config_version=5\n[autoload]\nBroken=\"*res://broken.gd\"\n",
+    )
+    .unwrap();
+    fs::write(directory.join("broken.gd"), "this is not valid GDScript\n").unwrap();
+    fs::write(
+        directory.join("domain/base.gd"),
+        "class_name SliceBase extends RefCounted\n",
+    )
+    .unwrap();
+    fs::write(directory.join("domain/child.gd"), "extends SliceBase\n").unwrap();
+    fs::write(directory.join("single.gd"), "extends RefCounted\n").unwrap();
+    let run = |selections: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_gdkit"));
+        command
+            .env_remove("GDKIT_GODOT")
+            .arg("check")
+            .arg(&directory)
+            .arg("--godot")
+            .arg(&engine)
+            .args(["--output", "json"]);
+        for selection in selections {
+            command.args(["--slice", selection]);
+        }
+        command.output().unwrap()
+    };
+    for (selections, count) in [
+        (vec!["single.gd"], 1),
+        (vec!["domain"], 2),
+        (vec!["domain/child.gd", "domain/base.gd"], 2),
+    ] {
+        let output = run(&selections);
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["checked"]["scripts"], count);
+    }
+    let missing = run(&["domain/child.gd"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missing.stdout).contains("SliceBase"));
+    for selection in ["../escape.gd", ".godot", "missing.gd"] {
+        assert_eq!(run(&[selection]).status.code(), Some(2));
+    }
+    fs::remove_file(directory.join("project.godot")).unwrap();
+    assert!(run(&["single.gd"]).status.success());
+    fs::remove_dir_all(directory).unwrap();
+}
