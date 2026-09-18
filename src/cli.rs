@@ -63,6 +63,8 @@ pub struct AnimationArgs {
 pub enum AnimationCommand {
     #[command(about = "List animations packed in a binary glTF file")]
     List(AnimationListArgs),
+    #[command(about = "Inspect effective AnimationTree graphs in a scene using Godot")]
+    Inspect(AnimationInspectArgs),
 }
 
 #[derive(Debug, Args)]
@@ -73,6 +75,25 @@ pub struct AnimationListArgs {
     pub names: bool,
     #[arg(long, value_name = "PATTERN", help = "Keep names containing this text")]
     pub filter: Option<String>,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Select human or JSON result output"
+    )]
+    pub output: NetOutput,
+}
+
+#[derive(Debug, Args)]
+pub struct AnimationInspectArgs {
+    #[arg(help = "Project-local scene path or res:// path")]
+    pub scene: String,
+    #[arg(long, value_name = "NODE_PATH", help = "Inspect one AnimationTree")]
+    pub tree: Option<String>,
+    #[arg(long, default_value = ".", help = "Godot project directory")]
+    pub project: PathBuf,
+    #[arg(long, value_name = "PATH", help = "Use this Godot executable")]
+    pub godot: Option<PathBuf>,
     #[arg(
         long,
         value_enum,

@@ -258,6 +258,23 @@ participant gets its own user-data directory, logs, and scenario environment
 variables. Run records retain startup failures, resolved ports, and readiness
 state for post-mortems.
 
+## Animation inspection
+
+```sh
+gdkit animation list character.glb
+gdkit animation list character.glb --names --filter run
+gdkit animation inspect res://player.tscn --tree AnimationTree
+gdkit animation inspect res://player.tscn --output json
+```
+
+`animation list` reads binary glTF metadata without starting Godot. `animation
+inspect` asks the configured engine for the effective AnimationTree graph,
+AnimationPlayer inventory, generated parameters, track targets, skeleton bones,
+and structural findings. Human output is concise; JSON retains individual track
+evidence and authored text-scene line locations. An inspection with structural
+errors exits 1. Inspection instantiates the scene off-tree, so script constructors
+run but `_ready` and gameplay processing do not.
+
 ## Scene inspection
 
 ```sh

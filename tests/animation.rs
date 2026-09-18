@@ -73,3 +73,73 @@ fn reports_malformed_glb_files_as_tooling_errors() {
     );
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn inspects_effective_animation_tree_graphs_with_godot() {
+    let Some(engine) = std::env::var_os("GDKIT_TEST_GODOT") else {
+        eprintln!("ignored, requires GDKIT_TEST_GODOT pointing to a Godot 4 editor");
+        return;
+    };
+    let directory =
+        std::env::temp_dir().join(format!("gdkit-animation-tree-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("project.godot"), "config_version=5\n").unwrap();
+    fs::write(
+        directory.join("tree.tscn"),
+        r#"[gd_scene load_steps=5 format=3]
+
+[sub_resource type="Animation" id="Animation_run"]
+resource_name = "Run"
+length = 1.25
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_main"]
+_data = {&"Run": SubResource("Animation_run")}
+
+[sub_resource type="AnimationNodeAnimation" id="AnimationNodeAnimation_run"]
+animation = &"Run"
+
+[sub_resource type="AnimationNodeStateMachineTransition" id="Transition_start"]
+advance_mode = 2
+
+[sub_resource type="AnimationNodeStateMachine" id="StateMachine_root"]
+states/Run/node = SubResource("AnimationNodeAnimation_run")
+states/Run/position = Vector2(200, 100)
+transitions = ["Start", "Run", SubResource("Transition_start")]
+
+[node name="Root" type="Node"]
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+libraries = {&"": SubResource("AnimationLibrary_main")}
+
+[node name="AnimationTree" type="AnimationTree" parent="."]
+tree_root = SubResource("StateMachine_root")
+anim_player = NodePath("../AnimationPlayer")
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gdkit"))
+        .args(["animation", "inspect", "res://tree.tscn", "--project"])
+        .arg(&directory)
+        .args(["--godot"])
+        .arg(engine)
+        .args(["--tree", "AnimationTree", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tree = &report["trees"][0];
+    assert_eq!(tree["path"], "AnimationTree");
+    assert_eq!(tree["source_line"], 26);
+    assert_eq!(tree["animation_player"]["resolved"], true);
+    assert_eq!(tree["animations"][0]["name"], "Run");
+    assert_eq!(tree["graph"]["source_line"], 16);
+    assert_eq!(tree["graph"]["children"][1]["animation_found"], true);
+
+    fs::remove_dir_all(directory).unwrap();
+}
