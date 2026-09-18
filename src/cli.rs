@@ -11,6 +11,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = "Inspect animation assets and graphs")]
+    Animation(AnimationArgs),
     #[command(about = "Construct serialized Godot resources")]
     Resource(ResourceArgs),
     #[command(about = "Refresh and manage Godot project caches")]
@@ -49,6 +51,35 @@ pub enum Command {
     Inspect(InspectArgs),
     #[command(about = "Run and control named multiplayer scenarios")]
     Scenario(ScenarioArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AnimationArgs {
+    #[command(subcommand)]
+    pub command: AnimationCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AnimationCommand {
+    #[command(about = "List animations packed in a binary glTF file")]
+    List(AnimationListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AnimationListArgs {
+    #[arg(help = "Binary glTF file to inspect")]
+    pub path: PathBuf,
+    #[arg(long, help = "Print only animation names")]
+    pub names: bool,
+    #[arg(long, value_name = "PATTERN", help = "Keep names containing this text")]
+    pub filter: Option<String>,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Select human or JSON result output"
+    )]
+    pub output: NetOutput,
 }
 
 #[derive(Debug, Args)]

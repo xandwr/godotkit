@@ -1,3 +1,4 @@
+mod animation;
 mod api;
 mod cache;
 mod check;
@@ -175,6 +176,7 @@ fn main() -> ExitCode {
         };
     }
     let result = match Cli::parse().command {
+        Command::Animation(args) => animation::run(args),
         Command::Cache(args) => cache::run(args),
         Command::Import(args) => cache::refresh(args),
         Command::Api(args) => api::run(args),
